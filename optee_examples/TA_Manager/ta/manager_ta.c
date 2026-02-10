@@ -139,6 +139,47 @@ static TEE_Result Call_Verify_Age(uint32_t param_types, TEE_Param params[4]) {
     return res;
 }
 
+static TEE_Result Call_Authority_Login(uint32_t param_types, TEE_Param params[4]) {
+    TEE_Result res;
+    TEE_TASessionHandle session = TEE_HANDLE_NULL;
+    TEE_UUID auth_uuid = TA_TRUSTED_AUTHORITY_UUID;
+    uint32_t ret_orig;
+
+    res = TEE_OpenTASession(&auth_uuid, TEE_TIMEOUT_INFINITE, 0, NULL, &session, &ret_orig);
+    if (res != TEE_SUCCESS) return res;
+
+    IMSG("MANAGER: Routage vers LOGIN_USER");
+    
+    // On transmet les 2 paramètres (Email, Password)
+    res = TEE_InvokeTACommand(session, TEE_TIMEOUT_INFINITE, 
+                              CMD_LOGIN_USER, 
+                              param_types, params, &ret_orig);
+
+    TEE_CloseTASession(session);
+    return res;
+}
+
+static TEE_Result Call_Authority_Store(uint32_t param_types, TEE_Param params[4]) {
+    TEE_Result res;
+    TEE_TASessionHandle session = TEE_HANDLE_NULL;
+    TEE_UUID auth_uuid = TA_TRUSTED_AUTHORITY_UUID;
+    uint32_t ret_orig;
+
+    // Ouverture de session vers l'Authority
+    res = TEE_OpenTASession(&auth_uuid, TEE_TIMEOUT_INFINITE, 0, NULL, &session, &ret_orig);
+    if (res != TEE_SUCCESS) return res;
+
+    IMSG("MANAGER: Routage vers STORE_WALLET_DATA");
+    
+    // On transmet les 4 paramètres (Nom, Age, Email, Password)
+    res = TEE_InvokeTACommand(session, TEE_TIMEOUT_INFINITE, 
+                              CMD_STORE_WALLET_DATA, 
+                              param_types, params, &ret_orig);
+
+    TEE_CloseTASession(session);
+    return res;
+}
+
 //Point d'entrée principal du MAnager
 TEE_Result TA_InvokeCommandEntryPoint(void *sess_ctx, uint32_t cmd_id,
                                       uint32_t pt, TEE_Param params[4])
@@ -150,8 +191,12 @@ TEE_Result TA_InvokeCommandEntryPoint(void *sess_ctx, uint32_t cmd_id,
             return call_hello_world_inc(&params[0].value.a);
         case TA_MANAGER_CMD_KEY_GEN:
         	return Call_Key_Gen(pt, params);
-        case TA_MANAGER_CMD_VERIFY_AGE:
+        case TA_MANAGER_CMD_CHECK_AGE:
         	return Call_Verify_Age(pt,params);
+        case TA_MANAGER_CMD_STORE_WALLET_DATA:
+        	return Call_Authority_Store(pt, params);
+       	case TA_MANAGER_CMD_LOGIN_USER:
+       		return Call_Authority_Login(pt, params);
         default:
             return TEE_ERROR_BAD_PARAMETERS;
     }

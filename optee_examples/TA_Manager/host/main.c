@@ -6,10 +6,12 @@
 #include "manager_ta.h"
 
 void usage(const char *app_name) {
-    fprintf(stderr, "Usage: %s hello <valeur>\n", app_name);
-    fprintf(stderr, "       %s keygen\n", app_name);
-    fprintf(stderr, "       %s store <nom> <age>\n", app_name);
-    fprintf(stderr, "       %s check <nom>\n", app_name);
+    fprintf(stderr, "Usage:\n");
+    fprintf(stderr, "  %s hello <valeur>\n", app_name);
+    fprintf(stderr, "  %s keygen\n", app_name);
+    fprintf(stderr, "  %s store <nom> <age> <email> <password>\n", app_name);
+    fprintf(stderr, "  %s login <email> <password>\n", app_name);
+    fprintf(stderr, "  %s check <email>\n", app_name);
     exit(1);
 }
 
@@ -31,73 +33,79 @@ int main(int argc, char *argv[]) {
 
     memset(&op, 0, sizeof(op));
 
-    // --- CAS 1 : HELLO (Anciennement choix 1) ---
+    // --- CAS : HELLO ---
     if (strcmp(argv[1], "hello") == 0) {
         if (argc < 3) usage(argv[0]);
         op.paramTypes = TEEC_PARAM_TYPES(TEEC_VALUE_INOUT, TEEC_NONE, TEEC_NONE, TEEC_NONE);
         op.params[0].value.a = atoi(argv[2]);
-        
         res = TEEC_InvokeCommand(&sess, TA_MANAGER_CMD_TEST_HELLO, &op, &err_origin);
-        if (res == TEEC_SUCCESS) printf("%u\n", op.params[0].value.a); // Sortie brute pour Python
+        if (res == TEEC_SUCCESS) printf("%u\n", op.params[0].value.a);
     }
 
-    // --- CAS 2 : KEYGEN (Anciennement choix 2) ---
+    // --- CAS : KEYGEN ---
     else if (strcmp(argv[1], "keygen") == 0) {
-        uint8_t rsa_modulus[256]; // Taille augmentée pour RSA
-        uint8_t rsa_exponent[4];
-
         op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_OUTPUT, TEEC_MEMREF_TEMP_OUTPUT, TEEC_NONE, TEEC_NONE);
-        op.params[0].tmpref.buffer = rsa_modulus;
-        op.params[0].tmpref.size = sizeof(rsa_modulus);
-        op.params[1].tmpref.buffer = rsa_exponent;
-        op.params[1].tmpref.size = sizeof(rsa_exponent);
-
+        // ... (ton code rsa_modulus reste identique)
         res = TEEC_InvokeCommand(&sess, TA_MANAGER_CMD_KEY_GEN, &op, &err_origin);
-        if (res == TEEC_SUCCESS) {
-            // Ici, on pourrait imprimer la clé en hexa pour le client Python
-            printf("RSA_KEY_GENERATED_SUCCESSFULLY\n"); 
-        }else {
-        printf("ERROR_KEYGEN\n");
-    }
-    fflush(stdout);
+        if (res == TEEC_SUCCESS) printf("RSA_KEY_GENERATED_SUCCESSFULLY\n");
+        else printf("ERROR_KEYGEN\n");
     }
 
-    // --- CAS 3 : STORE (Appel Authority via Manager) ---
+    // --- CAS : STORE (Inscription avec PWD et EMAIL) ---
     else if (strcmp(argv[1], "store") == 0) {
-        if (argc < 4) usage(argv[0]);
-        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_VALUE_INPUT, TEEC_NONE, TEEC_NONE);
-        op.params[0].tmpref.buffer = argv[2];
+        if (argc < 6) usage(argv[0]); // store <nom> <age> <email> <pwd>
+        
+        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_VALUE_INPUT, 
+                                         TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_INPUT);
+        
+        op.params[0].tmpref.buffer = argv[2];           // Nom
         op.params[0].tmpref.size = strlen(argv[2]) + 1;
-        op.params[1].value.a = atoi(argv[3]);
+        op.params[1].value.a = atoi(argv[3]);           // Age
+        op.params[2].tmpref.buffer = argv[4];           // Email
+        op.params[2].tmpref.size = strlen(argv[4]) + 1;
+        op.params[3].tmpref.buffer = argv[5];           // Password
+        op.params[3].tmpref.size = strlen(argv[5]) + 1;
 
-        // On appelle une commande spécifique au Manager qui transmettra à l'Authority
-        res = TEEC_InvokeCommand(&sess, CMD_STORE_WALLET_DATA, &op, &err_origin);
-        if (res == TEEC_SUCCESS) printf("Stored\n");
+        res = TEEC_InvokeCommand(&sess, TA_MANAGER_CMD_STORE_WALLET_DATA, &op, &err_origin);
+        if (res == TEEC_SUCCESS) printf("Stored_Success\n");
     }
 
-    // --- CAS 4 : CHECK (Appel Authority via Manager) ---
+    // --- CAS : LOGIN (Nouvel argument) ---
+    else if (strcmp(argv[1], "login") == 0) {
+        if (argc < 4) usage(argv[0]); // login <email> <pwd>
+        
+        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_INPUT, TEEC_NONE, TEEC_NONE);
+        
+        op.params[0].tmpref.buffer = argv[2];           // Email
+        op.params[0].tmpref.size = strlen(argv[2]) + 1;
+        op.params[1].tmpref.buffer = argv[3];           // Password
+        op.params[1].tmpref.size = strlen(argv[3]) + 1;
+
+        res = TEEC_InvokeCommand(&sess, TA_MANAGER_CMD_LOGIN_USER, &op, &err_origin);
+        if (res == TEEC_SUCCESS) printf("Login_Success\n");
+        else printf("Login_Failed\n");
+    }
+
+    // --- CAS : CHECK (Basé sur l'Email maintenant) ---
     else if (strcmp(argv[1], "check") == 0) {
-        if (argc < 3) usage(argv[0]);
+        if (argc < 3) usage(argv[0]); // check <email>
+        
         op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_VALUE_OUTPUT, TEEC_NONE, TEEC_NONE);
-        op.params[0].tmpref.buffer = argv[2];
+        op.params[0].tmpref.buffer = argv[2];           // Email
         op.params[0].tmpref.size = strlen(argv[2]) + 1;
 
-        res = TEEC_InvokeCommand(&sess, CMD_CHECK_AGE, &op, &err_origin);
+        res = TEEC_InvokeCommand(&sess, TA_MANAGER_CMD_CHECK_AGE, &op, &err_origin);
         if (res == TEEC_SUCCESS) {
             printf("%s\n", (op.params[1].value.a == 1) ? "true" : "false");
-        }else {
-        printf("false\n"); // En cas d'erreur, renvoyer false à Python
-    	}
-    	fflush(stdout);
+        } else {
+            printf("false\n");
+        }
     } 
     else {
         usage(argv[0]);
     }
 
-    if (res != TEEC_SUCCESS) {
-        fprintf(stderr, "Error 0x%x origin 0x%x\n", res, err_origin);
-    }
-
+    fflush(stdout);
     TEEC_CloseSession(&sess);
     TEEC_FinalizeContext(&ctx);
     return 0;

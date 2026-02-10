@@ -21,14 +21,20 @@
 /* Host ----------------------------------*/
 #define TA_MANAGER_CMD_TEST_HELLO		0
 #define TA_MANAGER_CMD_KEY_GEN			1
-#define TA_MANAGER_CMD_VERIFY_AGE	2
+#define TA_MANAGER_CMD_CHECK_AGE		2
+#define TA_MANAGER_CMD_STORE_WALLET_DATA 3
+#define TA_MANAGER_CMD_LOGIN_USER		4
 
 
 //Variable d'autres TA (necessaire pour que le Manager appelle les autres TA)
+/*Hello World*/
 #define TA_HELLO_WORLD_CMD_INC_VALUE	0
-/* Commande pour générer la clé */
+/* Key Generation */
 #define CMD_GENERATE_KEY			0
+
+/*trusted authority*/
 #define CMD_STORE_WALLET_DATA		0
 #define CMD_CHECK_AGE				1
+#define CMD_LOGIN_USER				2
 
 #endif /*TA_MANAGER_H*/

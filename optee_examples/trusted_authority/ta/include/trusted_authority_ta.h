@@ -12,7 +12,11 @@
 /* The function IDs implemented in this TA */
 #define CMD_STORE_WALLET_DATA		0
 #define CMD_CHECK_AGE				1
+#define CMD_LOGIN_USER				2
+#define CMD_LIST					3
 
-#define MAX_NAME_LEN	256
+#define MAX_NAME_LEN		64
+#define SALT_SIZE			16
+#define SHA256_HASH_SIZE	32
 
 #endif /*TA_HELLO_WORLD_H*/
