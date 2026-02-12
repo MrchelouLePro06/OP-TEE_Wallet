@@ -230,7 +230,6 @@ static TEE_Result list_and_display_users(void) {
     TEE_ObjectHandle object = TEE_HANDLE_NULL;
     TEE_ObjectInfo info;
     
-    // Buffers pour l'ID (le hash) et les données du compte
     uint8_t obj_id[TEE_OBJECT_ID_MAX_LEN];
     uint32_t obj_id_len;
     struct user_account acc;
@@ -238,57 +237,41 @@ static TEE_Result list_and_display_users(void) {
 
     IMSG("--- LISTE DES COMPTES SECURISE ---");
 
-    // 1. Allouer l'énumérateur
     res = TEE_AllocatePersistentObjectEnumerator(&oe);
-    if (res != TEE_SUCCESS) {
-        EMSG("Echec allocation enumerateur (0x%x)", res);
-        return res;
-    }
+    if (res != TEE_SUCCESS) return res;
 
-    // 2. Démarrer la recherche dans le stockage privé
     res = TEE_StartPersistentObjectEnumerator(oe, TEE_STORAGE_PRIVATE);
-    if (res != TEE_SUCCESS) {
-        if (res == TEE_ERROR_ITEM_NOT_FOUND) {
-            IMSG("Aucun compte trouve dans le stockage.");
-        } else {
-            EMSG("Echec demarrage enum (0x%x)", res);
-        }
+    
+    // Si aucun objet n'existe, Start renvoie ITEM_NOT_FOUND
+    if (res == TEE_ERROR_ITEM_NOT_FOUND) {
+        IMSG("Info: Le stockage est vide (aucun fichier .dar)");
         TEE_FreePersistentObjectEnumerator(oe);
-        return res;
+        return TEE_SUCCESS; // On renvoie SUCCESS pour ne pas faire paniquer le Host
     }
 
-    // 3. Boucle sur chaque objet trouvé
-    while (true) {
+    while (res == TEE_SUCCESS) {
         obj_id_len = sizeof(obj_id);
         res = TEE_GetNextPersistentObject(oe, &info, obj_id, &obj_id_len);
         
-        if (res != TEE_SUCCESS) break; // Fin de liste ou erreur
+        if (res != TEE_SUCCESS) break; 
 
-        // 4. Ouvrir l'objet pour lire ce qu'il y a dedans
         res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
-                                       obj_id, obj_id_sz,
+                                       obj_id, obj_id_len,
                                        TEE_DATA_FLAG_ACCESS_READ,
                                        &object);
 
         if (res == TEE_SUCCESS) {
-            // 5. Lire la structure user_account
             res = TEE_ReadObjectData(object, &acc, sizeof(acc), &read_bytes);
-            
             if (res == TEE_SUCCESS && read_bytes == sizeof(acc)) {
-                IMSG(">> Utilisateur: %s | Age: %u | Email: %s", 
-                     acc.name, acc.age, acc.email);
-            } else {
-                EMSG(">> Objet corrompu ou format different detecte");
+                IMSG("Compte detecte -> Nom: %s | Email: %s | Age: %u", 
+                     acc.name, acc.email, acc.age);
             }
-            
             TEE_CloseObject(object);
         }
     }
 
-    // 6. Nettoyage
     TEE_FreePersistentObjectEnumerator(oe);
     IMSG("--- FIN DE LISTE ---");
-    
     return TEE_SUCCESS;
 }
 
@@ -305,7 +288,7 @@ TEE_Result TA_InvokeCommandEntryPoint(void *sess_ctx, uint32_t cmd_id,
         case CMD_LOGIN_USER:
         	return login_user(param_types, params);
         case CMD_LIST:
-        	return list_and_display_users(void);
+        	return list_and_display_users();
         default:
             EMSG("Unknown command ID: %u", cmd_id); 
             return TEE_ERROR_BAD_PARAMETERS;

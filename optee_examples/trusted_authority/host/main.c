@@ -81,9 +81,16 @@ int main(int argc, char *argv[]) {
             printf("%s\n", (op.params[1].value.a == 1) ? "true" : "false");
         }
     } 
+    // --- CAS : list ---
+    else if (strcmp(argv[1], "list") == 0) {
+	    op.paramTypes = TEEC_PARAM_TYPES(TEEC_NONE, TEEC_NONE, TEEC_NONE, TEEC_NONE);
+	    res = TEEC_InvokeCommand(&sess, CMD_LIST, &op, &err_origin);
+	}
+
     else {
         usage(argv[0]);
     }
+    
 
     TEEC_CloseSession(&sess);
     TEEC_FinalizeContext(&ctx);
