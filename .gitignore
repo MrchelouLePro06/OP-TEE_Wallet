@@ -14,6 +14,7 @@ ms-tpm-20-ref/
 buildroot/
 toolchains/
 test/
+data/
 
 # On ignore les fichiers de compilation classiques
 *.o

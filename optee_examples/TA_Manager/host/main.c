@@ -70,19 +70,24 @@ int main(int argc, char *argv[]) {
         if (res == TEEC_SUCCESS) printf("Stored_Success\n");
     }
 
-    // --- CAS : LOGIN (Nouvel argument) ---
+    // --- CAS : LOGIN ---
     else if (strcmp(argv[1], "login") == 0) {
         if (argc < 4) usage(argv[0]); // login <email> <pwd>
+        char retrieved_name[64];
+        memset(retrieved_name, 0, sizeof(retrieved_name));
         
-        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_INPUT, TEEC_NONE, TEEC_NONE);
+        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_OUTPUT, TEEC_NONE);
         
         op.params[0].tmpref.buffer = argv[2];           // Email
         op.params[0].tmpref.size = strlen(argv[2]) + 1;
         op.params[1].tmpref.buffer = argv[3];           // Password
         op.params[1].tmpref.size = strlen(argv[3]) + 1;
 
+		op.params[2].tmpref.buffer = retrieved_name;    // Buffer pour le nom
+        op.params[2].tmpref.size = sizeof(retrieved_name);
+		
         res = TEEC_InvokeCommand(&sess, TA_MANAGER_CMD_LOGIN_USER, &op, &err_origin);
-        if (res == TEEC_SUCCESS) printf("Login_Success\n");
+        if (res == TEEC_SUCCESS) printf("Success: %s\n",retrieved_name);
         else printf("Login_Failed\n");
     }
 

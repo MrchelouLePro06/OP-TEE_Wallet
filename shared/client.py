@@ -27,13 +27,17 @@ def login_via_manager(email, password):
             [REE_MANAGER_APP_PATH, "login", email, password],
             capture_output=True, text=True, check=True, timeout=10
         )
-        res = process.stdout.strip().lower()
-        if "success" in res:
-            return True
-        return False
+        
+        output = process.stdout.strip()
+        
+        if output.startswith("Success:"):
+            _, user_name = output.split(":", 1)
+            return True, user_name
+        
+        return False, None
     except Exception as e:
-        print(f"[Erreur] Échec de l'authentification : {e}")
-        return False
+        print(f"[Erreur System] : {e}")
+        return False, None
 
 def store_wallet_data_via_manager(wallet: DigitalWallet):
     """Initialise les données dans la TA via le Manager"""
@@ -92,10 +96,13 @@ if __name__ == "__main__":
         
     email = input("Email : ")
     password = getpass.getpass("Mot de passe : ")
+    success, retrieved_name = login_via_manager(email, password)
     
-    if login_via_manager(email, password):
-        print("\n>>> LOGIN RÉUSSI : Session sécurisée ouverte.")
-        current_email = email
+    if success:
+        print(f"\n>>> LOGIN RÉUSSI : Session ouverte pour {retrieved_name}")
+        # On initialise l'objet global avec le nom venant de la TA
+        # Note : Si tu veux aussi l'âge, il faudra l'ajouter au printf du C
+        my_wallet = DigitalWallet(retrieved_name, 0, email, "")
     else:
         print("\n>>> ÉCHEC : Email ou mot de passe incorrect.")
         sys.exit(1)
