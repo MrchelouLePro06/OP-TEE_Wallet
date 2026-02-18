@@ -1,145 +1,111 @@
 import subprocess
 import socket
 import time
+import os
 import sys
 import getpass
+import secrets
 
-# On pointe vers le binaire du MANAGER car c'est lui l'orchestrateur
-REE_MANAGER_APP_PATH = "/usr/bin/optee_example_manager" 
 TPS_SOCKET_PATH = "/tmp/tps_socket"
+INIT_FILE = ".wallet_initialized" # Fichier caché pour savoir si on a déjà fait l'init
 
-class DigitalWallet:
-    def __init__(self, name: str, age: int, email: str, password: str):
-        self.name = name
-        self.age = age
-        self.email = email
-        self.password = password
+class WalletClient:
+    def __init__(self):
+        self.server_proc = None
 
-    def __str__(self):
-        return f"Wallet(Propriétaire: {self.name}, Âge: {self.age})"
+    def start_backend(self):
+        """Lance le serveur en arrière-plan"""
+        self.server_proc = subprocess.Popen([sys.executable, "server.py"])
+        time.sleep(1) # Laisse le temps au socket de s'ouvrir
 
-def login_via_manager(email, password):
-    """Demande au Manager de vérifier les identifiants via la TA"""
-    print(f"\n[Client] Tentative de connexion pour {email}...")
-    try:
-        # Appel au manager : login <email> <password>
-        process = subprocess.run(
-            [REE_MANAGER_APP_PATH, "login", email, password],
-            capture_output=True, text=True, check=True, timeout=10
-        )
-        
-        output = process.stdout.strip()
-        
-        if output.startswith("Success:"):
-            _, user_name = output.split(":", 1)
-            return True, user_name
-        
-        return False, None
-    except Exception as e:
-        print(f"[Erreur System] : {e}")
-        return False, None
+    def stop_backend(self):
+        """Arrête le serveur proprement"""
+        if self.server_proc:
+            self.server_proc.terminate()
+            if os.path.exists(TPS_SOCKET_PATH):
+                os.remove(TPS_SOCKET_PATH)
 
-def store_wallet_data_via_manager(wallet: DigitalWallet):
-    """Initialise les données dans la TA via le Manager"""
-    print(f"\n[Client] Création du Wallet pour {wallet.name}...")
-    try:
-        process = subprocess.run(
-            [REE_MANAGER_APP_PATH, "store", wallet.name, str(wallet.age), wallet.email, wallet.password],
-            capture_output=True, text=True, check=True, timeout=10
-        )
-        print(f"[TA Manager] {process.stdout.strip()}")
-        return True
-    except Exception as e:
-        print(f"[Erreur] Impossible d'initialiser le Wallet : {e}")
-        return False
+    def request(self, action, *args):
+        """Envoie une requête au serveur via le socket"""
+        msg = f"{action}|" + "|".join(map(str, args))
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.connect(TPS_SOCKET_PATH)
+                s.sendall(msg.encode())
+                return s.recv(4096).decode()
+        except Exception as e:
+            return f"Erreur de communication : {e}"
 
-def send_to_tps_manager(action: str, email: str, data: str = ""):
-    """Envoie une requête au serveur socket (Format: ACTION:EMAIL:DATA)"""
-    try:
-        client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client_socket.connect(TPS_SOCKET_PATH)
-        message = f"{action}:{email}:{data}"
-        client_socket.sendall(message.encode('utf-8'))
-        response = client_socket.recv(4096).decode('utf-8')
-        client_socket.close()
-        return response
-    except Exception as e:
-        return f"Erreur de communication : {e}"
+    def run(self):
+        try:
+            # 1. Vérification de l'initialisation
+            if not os.path.exists(INIT_FILE):
+                print("--- PREMIÈRE UTILISATION : INITIALISATION ---")
+                fn = input("Prénom : ")
+                ln = input("Nom : ")
+                bd = input("Date de Naissance (YYYY-MM-DD) : ")
+                pw = getpass.getpass("Définissez votre mot de passe : ")
+                
+                # On lance le serveur temporairement pour l'init
+                self.start_backend()
+                res = self.request("init", fn, ln, bd, pw)
+                
+                if "SUCCESS" in res:
+                    with open(INIT_FILE, "w") as f: f.write("1")
+                    print("Wallet initialisé avec succès !")
+                else:
+                    print(f"Erreur d'initialisation : {res}")
+                    return
+            else:
+                # Si déjà initialisé, on lance juste le backend
+                self.start_backend()
 
-def show_menu():
-    print("\n" + "="*40)
-    print("       MENU TPE SÉCURISÉ (MANAGER)      ")
-    print("="*40)
-    print("1. Vérifier l'éligibilité (Âge via TA Authority)")
-    print("2. Générer une clé de transaction (TA KeyGen)")
-    print("3. Test 'Hello World' (Incrémentation TA)")
-    print("4. Changer d'utilisateur / Réinitialiser")
-    print("5. Quitter")
-    print("="*40)
-    return input("Choisissez une option : ")
+            # Connexion
+            print("\n--- CONNEXION ---")
+            pwd = getpass.getpass("Mot de passe : ")
+
+            current_challenge = secrets.token_hex(8) 
+            print(f"[*] Challenge de session généré : {current_challenge}")
+            # Challenge aléatoire pour la signature RSA dans la TA
+            res = self.request("login", pwd, current_challenge)
+
+            if "SUCCESS" in res:
+                parts = res.split(":")
+                sig = parts[1] if len(parts) > 1 else "N/A"
+                print(f"Authentification réussie. Signature RSA : {sig[:20]}...")
+                
+                # 3. Menu Principal
+                while True:
+                    print("\n" + "="*30)
+                    print("      MENU WALLET")
+                    print("="*30)
+                    print("1. Ajouter un Document (PDF/Diplôme)")
+                    print("2. Consulter un Document")
+                    print("3. Supprimer un Document")
+                    print("4. Quitter")
+                    choix = input("\nVotre choix : ")
+
+                    if choix == "1":
+                        doc_name = input("Nom du document (ex: CARTE_VITALE) : ")
+                        content = input("Contenu du document : ")
+                        print(self.request("add_doc", doc_name, content))
+                    elif choix == "2":
+                        doc_name = input("Nom du document à lire : ")
+                        print(self.request("get_doc", doc_name))
+                    elif choix == "3":
+                        doc_name = input("Nom du document à supprimer : ")
+                        print(self.request("delete_doc", doc_name))
+                    elif choix == "4":
+                        print("Fermeture sécurisée...")
+                        # On prévient le serveur de réinitialiser l'état d'authentification
+                        self.request("logout") 
+                        break
+            else:
+                print("Échec de l'authentification.")
+
+        finally:
+            self.stop_backend()
 
 if __name__ == "__main__":
-    print("--- Démarrage du Client TPE ---")
-    
-    mode = input("1. Se connecter\n2. S'inscrire\nChoix : ")
-    
-    if mode == "2":
-        name = input("Entrez votre nom : ")
-        age = int(input("Entrez votre âge : "))
-        email = input("Email : ")
-        password = getpass.getpass("Définissez un mot de passe : ")
-        my_wallet = DigitalWallet(name, age, email, password)
-        if not store_wallet_data_via_manager(my_wallet):
-            sys.exit(1)
-        print("Compte créé ! Veuillez vous connecter.")
-        # On force la connexion après inscription
-        
-    email = input("Email : ")
-    password = getpass.getpass("Mot de passe : ")
-    success, retrieved_name = login_via_manager(email, password)
-    
-    if success:
-        print(f"\n>>> LOGIN RÉUSSI : Session ouverte pour {retrieved_name}")
-        # On initialise l'objet global avec le nom venant de la TA
-        # Note : Si tu veux aussi l'âge, il faudra l'ajouter au printf du C
-        my_wallet = DigitalWallet(retrieved_name, 0, email, "")
-    else:
-        print("\n>>> ÉCHEC : Email ou mot de passe incorrect.")
-        sys.exit(1)
-
-    while True:
-        choix = show_menu()
-
-        if choix == "1":
-            print(f"\n[Action] Vérification d'âge pour {my_wallet.name}...")
-            res = send_to_tps_manager("CHECK_AGE", my_wallet.name)
-            if "true" in res.lower():
-                print(">>> RÉSULTAT : ACCÈS AUTORISÉ (Majeur)")
-            else:
-                print(">>> RÉSULTAT : ACCÈS REFUSÉ (Mineur ou Mismatch)")
-
-        elif choix == "2":
-            print(f"\n[Action] Demande de génération de clé...")
-            res = send_to_tps_manager("KEYGEN", my_wallet.name)
-            print(f">>> CLÉ GÉNÉRÉE : {res}")
-
-        elif choix == "3":
-            print(f"\n[Action] Appel Hello World via Manager...")
-            res = send_to_tps_manager("HELLO", my_wallet.name)
-            print(f">>> RÉPONSE TA : {res}")
-
-        elif choix == "4":
-            send_to_tps_manager("EXIT", current_email)
-            print("\nFermeture de la session sécurisée.")
-            break
-
-        elif choix == "5":
-            print("\nFermeture du TPE. Sécurisation des données...")
-            client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            send_to_tps_manager("EXIT", my_wallet.name)
-            break
-        
-        else:
-            print("\nOption invalide !")
-        
-        time.sleep(1)
+    client = WalletClient()
+    client.run()

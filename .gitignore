@@ -16,6 +16,8 @@ toolchains/
 test/
 data/
 
+.wallet_initialized
+
 # On ignore les fichiers de compilation classiques
 *.o
 *.d

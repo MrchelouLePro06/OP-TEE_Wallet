@@ -3,14 +3,6 @@
 #include <string.h>
 #include <trusted_authority_ta.h>
 
-struct user_account {
-    char name[MAX_NAME_LEN];
-    uint32_t age;
-    char email[MAX_NAME_LEN];
-    uint8_t password_hash[SHA256_HASH_SIZE]; // SHA-256
-    uint8_t salt[SALT_SIZE];          // Pour sécuriser le hachage
-};
-
 TEE_Result TA_CreateEntryPoint(void) {
     DMSG("TA_CreateEntryPoint successfully called.");
     return TEE_SUCCESS;
@@ -56,223 +48,167 @@ static TEE_Result hash_password(void *pwd, uint32_t pwd_len, uint8_t *salt, uint
     return res;
 }
 
-static TEE_Result store_wallet_data(uint32_t param_types, TEE_Param params[4]) {
+static TEE_Result ensure_rsa_key_exists(void) {
     TEE_Result res;
-    TEE_ObjectHandle object = TEE_HANDLE_NULL;
-    struct user_account acc;
-    uint8_t obj_id[SHA256_HASH_SIZE]; 
-    uint32_t obj_id_sz = SHA256_HASH_SIZE;
+    TEE_ObjectHandle key_handle = TEE_HANDLE_NULL;
+    TEE_ObjectHandle persistent_key = TEE_HANDLE_NULL;
+    char obj_id[] = WALLET_KEY_OBJ_ID;
 
-    IMSG("STORE: Debut de la creation de compte");
-
-    // 1. Verification des types de parametres
-    uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, TEE_PARAM_TYPE_VALUE_INPUT,
-                                      TEE_PARAM_TYPE_MEMREF_INPUT, TEE_PARAM_TYPE_MEMREF_INPUT);
-
-    if (param_types != exp_pt) {
-        EMSG("STORE: Mauvais types (recu 0x%x)", param_types);
-        return TEE_ERROR_BAD_PARAMETERS;
-    }
-
-    // 2. Nettoyage et remplissage de la structure
-    memset(&acc, 0, sizeof(struct user_account));
-    
-    // Copie du Nom
-    size_t name_len = (params[0].memref.size < MAX_NAME_LEN) ? params[0].memref.size : MAX_NAME_LEN - 1;
-    TEE_MemMove(acc.name, params[0].memref.buffer, name_len);
-    
-    // Copie de l'Age
-    acc.age = params[1].value.a;
-    
-    // Copie de l'Email
-    size_t email_len = (params[2].memref.size < MAX_NAME_LEN) ? params[2].memref.size : MAX_NAME_LEN - 1;
-    TEE_MemMove(acc.email, params[2].memref.buffer, email_len);
-
-    // 3. GENERATION DE L'ID UNIQUE (Hash de l'Email)
-    // On utilise SHA-256 sur l'email pour garantir un ID de fichier valide et sans panic
-    res = hash_password(params[2].memref.buffer, params[2].memref.size, NULL, obj_id);
-    if (res != TEE_SUCCESS) {
-        EMSG("STORE: Echec generation ID (0x%x)", res);
-        return res;
-    }
-
-    // 4. Securisation du mot de passe
-    TEE_GenerateRandom(acc.salt, SALT_SIZE);
-    res = hash_password(params[3].memref.buffer, params[3].memref.size, acc.salt, acc.password_hash);
-    if (res != TEE_SUCCESS) return res;
-
-    IMSG("STORE: Ecriture dans le stockage securise (ID Hash genere)");
-
-    // 5. Creation de l'objet persistant (ID = Hash de l'email)
-    // On utilise NULL, 0 pour les donnees initiales pour eviter les problemes de pile
-    res = TEE_CreatePersistentObject(TEE_STORAGE_PRIVATE,
-                                   obj_id, obj_id_sz,
-                                   TEE_DATA_FLAG_ACCESS_WRITE | TEE_DATA_FLAG_OVERWRITE,
-                                   TEE_HANDLE_NULL, 
-                                   NULL, 0, 
-                                   &object);
-
-    if (res != TEE_SUCCESS) {
-        EMSG("STORE: Erreur CreateObject (0x%x)", res);
-        return res;
-    }
-	IMSG("hello chef");
-    // 6. Ecriture des donnees de la structure
-    res = TEE_WriteObjectData(object, &acc, sizeof(struct user_account));
-    if (res != TEE_SUCCESS) {
-        EMSG("STORE: Erreur WriteData (0x%x)", res);
-        TEE_CloseAndDeletePersistentObject1(object);
-        return res;
-    }
-
-    TEE_CloseObject(object);
-    IMSG("STORE: Succes ! Compte cree pour: %s", acc.email);
-    
-    return TEE_SUCCESS;
-}
-
-static TEE_Result login_user(uint32_t param_types, TEE_Param params[4]) {
-    TEE_Result res;
-    TEE_ObjectHandle object = TEE_HANDLE_NULL;
-    struct user_account stored_acc;
-    uint8_t input_hash[SHA256_HASH_SIZE];
-    uint32_t read_bytes;
-    
-    IMSG("LOGIN: Debut de la fonction");
-	if (params[0].memref.buffer == NULL || params[1].memref.buffer == NULL) {
-        EMSG("LOGIN: Erreur pointeur NULL");
-        return TEE_ERROR_BAD_PARAMETERS;
-    }
-    
-	uint8_t obj_id[SHA256_HASH_SIZE];
-	hash_password(params[0].memref.buffer, params[0].memref.size, NULL, obj_id);
-	res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
-                               obj_id, SHA256_HASH_SIZE,
-                               TEE_DATA_FLAG_ACCESS_READ, &object);
-
-    if (res != TEE_SUCCESS) return TEE_ERROR_ITEM_NOT_FOUND;
-	
-    TEE_ReadObjectData(object, &stored_acc, sizeof(stored_acc), &read_bytes);
-    TEE_CloseObject(object);
-
-    // Hacher le password fourni par l'utilisateur avec le sel STOCKÉ
-    hash_password(params[1].memref.buffer, params[1].memref.size, stored_acc.salt, input_hash);
-
-    // Comparer les hashs
-    if (TEE_MemCompare(input_hash, stored_acc.password_hash, SHA256_HASH_SIZE) == 0) {
-        IMSG("Auth Success");
+    // Vérifier si l'objet existe déjà
+    res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE, obj_id, sizeof(obj_id),
+                                   TEE_DATA_FLAG_ACCESS_READ, &persistent_key);
+    if (res == TEE_SUCCESS) {
+        TEE_CloseObject(persistent_key);
         return TEE_SUCCESS;
     }
 
-    return TEE_ERROR_ACCESS_DENIED;
-}
+    // Allouer et Générer la paire de clés en mémoire volatile (Transient)
+    res = TEE_AllocateTransientObject(TEE_TYPE_RSA_KEYPAIR, 2048, &key_handle);
+    if (res != TEE_SUCCESS) return res;
 
-static TEE_Result check_age(uint32_t param_types, TEE_Param params[4]) { 
-    TEE_Result res;
-    TEE_ObjectHandle object = TEE_HANDLE_NULL;
-    struct user_account stored_acc;
-    uint32_t read_bytes;
-
-    // Structure attendue : 
-    // [0] MEMREF_INPUT : L'email de l'utilisateur (la clé du fichier)
-    // [1] VALUE_OUTPUT : Le résultat (1 pour majeur, 0 pour mineur/erreur)
-    const uint32_t expected_param_types = TEE_PARAM_TYPES(
-        TEE_PARAM_TYPE_MEMREF_INPUT, TEE_PARAM_TYPE_VALUE_OUTPUT, 
-        TEE_PARAM_TYPE_NONE, TEE_PARAM_TYPE_NONE); 
-    
-    if (param_types != expected_param_types) return TEE_ERROR_BAD_PARAMETERS; 
-
-    // Initialisation du retour par défaut à "Refusé"
-    params[1].value.a = 0; 
-
-    if (params[0].memref.buffer == NULL || params[0].memref.size == 0) {
-        EMSG("check_age: Email manquant dans les paramètres");
-        return TEE_ERROR_BAD_PARAMETERS;
-    }
-
-    res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
-                                 params[0].memref.buffer, 
-                                 params[0].memref.size,
-                                 TEE_DATA_FLAG_ACCESS_READ,
-                                 &object);
-
+    res = TEE_GenerateKey(key_handle, 2048, NULL, 0);
     if (res != TEE_SUCCESS) {
-        DMSG("check_age: Objet non trouve");
-        return TEE_SUCCESS; 
-    }
-
-    // Lecture des données sécurisées
-    res = TEE_ReadObjectData(object, &stored_acc, sizeof(stored_acc), &read_bytes);
-    TEE_CloseObject(object);
-
-    if (res != TEE_SUCCESS || read_bytes != sizeof(stored_acc)) {
-        EMSG("check_age: Erreur de lecture de l'objet persistant");
+        TEE_FreeTransientObject(key_handle);
         return res;
     }
 
-    // Vérification de l'âge
-    IMSG("check_age: Verification pour %s (Age stocke: %u)", stored_acc.name, stored_acc.age);
-    
-    if (stored_acc.age >= 18) {
-        params[1].value.a = 1; // Majeur
-        IMSG("check_age: ACCES AUTORISE");
-    } else {
-        params[1].value.a = 0; // Mineur
-        IMSG("check_age: ACCES REFUSE (Mineur)");
+    // Création de l'objet persistant VIDE avec les attributs de la clé transient
+    res = TEE_CreatePersistentObject(TEE_STORAGE_PRIVATE,
+                                     obj_id, sizeof(obj_id),
+                                     TEE_DATA_FLAG_ACCESS_WRITE | TEE_DATA_FLAG_ACCESS_READ,
+                                     key_handle, // On utilise l'objet transient comme source d'attributs
+                                     NULL, 0,    // Pas de données initiales (le buffer de données est séparé des attributs de clé)
+                                     &persistent_key);
+
+    // Nettoyage
+    TEE_FreeTransientObject(key_handle);
+    if (persistent_key != TEE_HANDLE_NULL) {
+        TEE_CloseObject(persistent_key);
     }
 
-    return TEE_SUCCESS; 
+    return res;
 }
 
-static TEE_Result list_and_display_users(void) {
+static TEE_Result sign_challenge(void *data, uint32_t data_len, void *sig, uint32_t *sig_len) {
     TEE_Result res;
-    TEE_ObjectEnumHandle oe = TEE_HANDLE_NULL;
-    TEE_ObjectHandle object = TEE_HANDLE_NULL;
-    TEE_ObjectInfo info;
+    TEE_ObjectHandle key_handle = TEE_HANDLE_NULL;
+    TEE_OperationHandle op_sign = TEE_HANDLE_NULL;
+    TEE_OperationHandle op_hash = TEE_HANDLE_NULL;
+    uint8_t digest[32]; 
+    uint32_t digest_len = 32;
+    char key_id[] = WALLET_KEY_OBJ_ID;
+
+    // A. Calcul du Digest SHA-256 (Évite les erreurs de taille dans AsymmetricSignDigest)
+    res = TEE_AllocateOperation(&op_hash, TEE_ALG_SHA256, TEE_MODE_DIGEST, 0);
+    if (res != TEE_SUCCESS) return res;
     
-    uint8_t obj_id[TEE_OBJECT_ID_MAX_LEN];
-    uint32_t obj_id_len;
-    struct user_account acc;
-    uint32_t read_bytes;
-
-    IMSG("--- LISTE DES COMPTES SECURISE ---");
-
-    res = TEE_AllocatePersistentObjectEnumerator(&oe);
+    res = TEE_DigestDoFinal(op_hash, data, data_len, digest, &digest_len);
+    TEE_FreeOperation(op_hash);
     if (res != TEE_SUCCESS) return res;
 
-    res = TEE_StartPersistentObjectEnumerator(oe, TEE_STORAGE_PRIVATE);
-    
-    // Si aucun objet n'existe, Start renvoie ITEM_NOT_FOUND
-    if (res == TEE_ERROR_ITEM_NOT_FOUND) {
-        IMSG("Info: Le stockage est vide (aucun fichier .dar)");
-        TEE_FreePersistentObjectEnumerator(oe);
-        return TEE_SUCCESS; // On renvoie SUCCESS pour ne pas faire paniquer le Host
-    }
+    // B. Signature du Digest
+    res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE, key_id, sizeof(key_id),
+                                   TEE_DATA_FLAG_ACCESS_READ, &key_handle);
+    if (res != TEE_SUCCESS) return res;
 
-    while (res == TEE_SUCCESS) {
-        obj_id_len = sizeof(obj_id);
-        res = TEE_GetNextPersistentObject(oe, &info, obj_id, &obj_id_len);
-        
-        if (res != TEE_SUCCESS) break; 
-
-        res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE,
-                                       obj_id, obj_id_len,
-                                       TEE_DATA_FLAG_ACCESS_READ,
-                                       &object);
-
+    res = TEE_AllocateOperation(&op_sign, TEE_ALG_RSASSA_PKCS1_V1_5_SHA256, TEE_MODE_SIGN, 2048);
+    if (res == TEE_SUCCESS) {
+        res = TEE_SetOperationKey(op_sign, key_handle);
         if (res == TEE_SUCCESS) {
-            res = TEE_ReadObjectData(object, &acc, sizeof(acc), &read_bytes);
-            if (res == TEE_SUCCESS && read_bytes == sizeof(acc)) {
-                IMSG("Compte detecte -> Nom: %s | Email: %s | Age: %u", 
-                     acc.name, acc.email, acc.age);
-            }
-            TEE_CloseObject(object);
+            // On signe le digest calculé juste au-dessus
+            res = TEE_AsymmetricSignDigest(op_sign, NULL, 0, digest, digest_len, sig, sig_len);
         }
     }
 
-    TEE_FreePersistentObjectEnumerator(oe);
-    IMSG("--- FIN DE LISTE ---");
-    return TEE_SUCCESS;
+    if (op_sign) TEE_FreeOperation(op_sign);
+    TEE_CloseObject(key_handle);
+    
+    return res;
+}
+
+static TEE_Result init_wallet(uint32_t param_types, TEE_Param params[4]) {
+    TEE_Result res;
+    TEE_ObjectHandle object = TEE_HANDLE_NULL;
+    wallet_core_t wallet;
+    
+    // Identifiant de l'objet (le nom du fichier dans /var/lib/tee)
+    char obj_id[] = WALLET_DATA_OBJ_ID; 
+
+    IMSG("INIT: Debut de la creation du Wallet Unique");
+    memset(&wallet, 0, sizeof(wallet));
+    
+    // On recupere les infos depuis le Normal World
+    // params[0]: Prenom, params[1]: Nom, params[2]: Date de naissance, params[3]: Pwd
+    TEE_MemMove(wallet.firstname, params[0].memref.buffer, params[0].memref.size);
+    TEE_MemMove(wallet.lastname, params[1].memref.buffer, params[1].memref.size);
+    TEE_MemMove(wallet.birth_date, params[2].memref.buffer, params[2].memref.size);
+
+    // Securisation du mot de passe
+    TEE_GenerateRandom(wallet.salt, SALT_SIZE);
+    res = hash_password(params[3].memref.buffer, params[3].memref.size, 
+                        wallet.salt, wallet.password_hash);
+    if (res != TEE_SUCCESS) return res;
+
+    wallet.is_initialized = true;
+
+    // Creation objet persistant
+    res = TEE_CreatePersistentObject(TEE_STORAGE_PRIVATE,
+                                   obj_id, sizeof(obj_id),
+                                   TEE_DATA_FLAG_ACCESS_WRITE | TEE_DATA_FLAG_OVERWRITE,
+                                   TEE_HANDLE_NULL, // Pas d'attributs specifiques
+                                   NULL, 0,          // objet vide dans un premier temps
+                                   &object);
+
+    if (res != TEE_SUCCESS) {
+        EMSG("INIT: Echec de la creation de l'objet (0x%x)", res);
+        return res;
+    }
+
+    // On remplit le conteneur que l'on vient de creer
+    res = TEE_WriteObjectData(object, &wallet, sizeof(wallet));
+    if (res != TEE_SUCCESS) {
+        EMSG("INIT: Erreur d'ecriture des donnees (0x%x)", res);
+        // En cas d'erreur, on supprime l'objet mal ecrit pour la securite
+        TEE_CloseAndDeletePersistentObject1(object);
+        return res;
+    }
+    IMSG("debut ensure_rsa_key");
+    res = ensure_rsa_key_exists();
+    IMSG("fin ensure_rsa_key");
+
+    if (res == TEE_SUCCESS) {
+        IMSG("INIT: Tout est OK.");
+    }
+    // Fermeture
+    TEE_CloseObject(object);
+    IMSG("INIT: Succes ! Wallet cree pour %s %s", wallet.firstname, wallet.lastname);
+
+    // GENERATION DE LA CLE RSA
+    return res;
+}
+
+static TEE_Result login_wallet(uint32_t param_types, TEE_Param params[4]) {
+    TEE_Result res;
+    TEE_ObjectHandle object = TEE_HANDLE_NULL;
+    wallet_core_t stored_wallet;
+    uint32_t read_bytes;
+    char obj_id[] = WALLET_DATA_OBJ_ID;
+
+    // 1. Lire le Wallet
+    res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE, obj_id, sizeof(obj_id),
+                                   TEE_DATA_FLAG_ACCESS_READ, &object);
+    if (res != TEE_SUCCESS) return TEE_ERROR_ITEM_NOT_FOUND;
+
+    TEE_ReadObjectData(object, &stored_wallet, sizeof(stored_wallet), &read_bytes);
+    TEE_CloseObject(object);
+
+    // 2. Vérifier PWD (comparer hash) - À implémenter selon ton code
+    // if (password_verify(...) != SUCCESS) return TEE_ERROR_ACCESS_DENIED;
+
+    // 3. Authentification réussie -> Signature RSA du challenge
+    // params[1] = Challenge (IN), params[2] = Signature (OUT)
+    return sign_challenge(params[1].memref.buffer, params[1].memref.size,
+                          params[2].memref.buffer, &params[2].memref.size);
 }
 
 TEE_Result TA_InvokeCommandEntryPoint(void *sess_ctx, uint32_t cmd_id,
@@ -281,14 +217,10 @@ TEE_Result TA_InvokeCommandEntryPoint(void *sess_ctx, uint32_t cmd_id,
     DMSG("TA_InvokeCommandEntryPoint: Received command ID %u", cmd_id);
     
     switch (cmd_id) {
-        case CMD_STORE_WALLET_DATA: 
-            return store_wallet_data(param_types, params);
-        case CMD_CHECK_AGE:
-            return check_age(param_types, params);
-        case CMD_LOGIN_USER:
-        	return login_user(param_types, params);
-        case CMD_LIST:
-        	return list_and_display_users();
+        case CMD_INIT_WALLET:
+            return init_wallet(param_types, params);
+        case CMD_LOGIN_WALLET:
+            return login_wallet(param_types, params);
         default:
             EMSG("Unknown command ID: %u", cmd_id); 
             return TEE_ERROR_BAD_PARAMETERS;

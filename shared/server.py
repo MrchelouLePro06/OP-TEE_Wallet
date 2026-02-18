@@ -1,97 +1,92 @@
-import subprocess
 import socket
+import subprocess
 import os
+import sys
 
-# Configuration
-REE_COMM_APP_PATH = "/usr/bin/optee_example_manager"
-SOCKET_PATH = "/tmp/tps_socket"
+TPS_SOCKET_PATH = "/tmp/tps_socket"
+MANAGER_PATH = "/usr/bin/optee_example_manager"
 
-def handle_client_connection(conn, addr):
-    print(f"[TPS] Session ouverte")
+class WalletState:
+    def __init__(self):
+        self.is_authenticated = False
+        self.current_challenge = None # Pour garder trace du challenge en cours
+
+state = WalletState()
+
+def call_manager(cmd, args):
+    """Exécute le binaire Manager en C et capture la sortie"""
     try:
-        while True:
-            data_bytes = conn.recv(1024)
-            if not data_bytes: break
-
-            message = data_bytes.decode('utf-8').strip()
-            # Format attendu du client : ACTION:EMAIL:EXTRA_DATA
-            parts = message.split(':')
-            action = parts[0].upper()
-
-            if action == "EXIT":
-                conn.sendall("BYE".encode())
-                break
-
-            # Sécurité : On vérifie qu'on a au moins l'email pour les autres actions
-            if len(parts) < 2:
-                conn.sendall("Erreur: Email manquant".encode())
-                continue
-
-            email = parts[1]
-            extra_data = parts[2] if len(parts) > 2 else ""
-
-            response = ""
-
-            # --- ROUTAGE VERS LE BINAIRE REE MANAGER ---
-            if action == "LOGIN":
-                print(f"[TPS] Auth attempt for {email}...")
-                # Appel : manager login <email> <password>
-                process = subprocess.run(
-                    [REE_COMM_APP_PATH, "login", email, extra_data],
-                    capture_output=True, text=True, timeout=10
-                )
-                response = process.stdout.strip()
-
-            elif action == "CHECK_AGE":
-                print(f"[TPS] Check Age for {email}...")
-                # On passe l'email car la TA ouvre le fichier correspondant
-                process = subprocess.run(
-                    [REE_COMM_APP_PATH, "check", email],
-                    capture_output=True, text=True, timeout=10
-                )
-                response = process.stdout.strip()
-
-            elif action == "KEYGEN":
-                print(f"[TPS] KeyGen request for {email}...")
-                process = subprocess.run(
-                    [REE_COMM_APP_PATH, "keygen", email],
-                    capture_output=True, text=True, timeout=10
-                )
-                response = process.stdout.strip()
-
-            elif action == "HELLO":
-                process = subprocess.run(
-                    [REE_COMM_APP_PATH, "hello"],
-                    capture_output=True, text=True, timeout=10
-                )
-                response = process.stdout.strip()
-
-            else:
-                response = f"Erreur: Action '{action}' inconnue."
-
-            print(f"[TPS] Réponse Manager : {response}")
-            conn.sendall(response.encode('utf-8'))
-
+        # args contient ici [password, challenge] pour le login
+        res = subprocess.run([MANAGER_PATH, cmd] + list(args), capture_output=True, text=True)
+        if res.returncode == 0:
+            return res.stdout.strip()
+        else:
+            # On récupère stderr pour plus de détails sur l'erreur TA
+            err_msg = res.stderr.strip() if res.stderr else "Erreur inconnue"
+            return f"ERROR_TA:{err_msg}"
     except Exception as e:
-        print(f"[TPS] Erreur session : {e}")
-    finally:
-        conn.close()
+        return f"ERROR_SYS:{str(e)}"
 
-def start_service():
-    if os.path.exists(SOCKET_PATH): os.remove(SOCKET_PATH)
-    server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+def start_server():
+    if os.path.exists(TPS_SOCKET_PATH):
+        os.remove(TPS_SOCKET_PATH)
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(TPS_SOCKET_PATH)
+    server.listen(5)
+
     try:
-        server_socket.bind(SOCKET_PATH)
-        server_socket.listen(1)
-        print(f"[TPS] Bridge prêt sur {SOCKET_PATH}")
         while True:
-            conn, addr = server_socket.accept()
-            handle_client_connection(conn, addr)
+            conn, _ = server.accept()
+            try:
+                data = conn.recv(4096).decode('utf-8')
+                if not data: continue
+
+                parts = data.split('|')
+                action = parts[0]
+                args = parts[1:]
+
+                # --- LOGIQUE DE SÉCURITÉ ---
+                
+                # Gestion du Login
+                if action == "login":
+                    # args[0] = pwd, args[1] = challenge
+                    response = call_manager(action, args)
+                    if "SUCCESS" in response:
+                        state.is_authenticated = True
+                        state.current_challenge = args[1] # On stocke le challenge réussi
+                    else:
+                        state.is_authenticated = False
+                
+                # Gestion de l'Init
+                elif action == "init":
+                    response = call_manager(action, args)
+
+                # Actions sécurisées (nécessitent d'être loggé)
+                elif action in ["add_doc", "get_doc", "delete_doc"]:
+                    if not state.is_authenticated:
+                        response = "AUTH_REQUIRED:Veuillez vous connecter avec votre signature RSA."
+                    else:
+                        response = call_manager(action, args)
+                
+                # Déconnexion (Optionnel, utile pour le menu "Quitter")
+                elif action == "logout":
+                    state.is_authenticated = False
+                    state.current_challenge = None
+                    response = "SUCCESS:Déconnecté"
+
+                else:
+                    response = "ERROR:Action inconnue"
+
+                conn.sendall(response.encode('utf-8'))
+                
+            finally:
+                conn.close()
     except KeyboardInterrupt:
-        print("\n[TPS] Arrêt serveur...")
+        pass
     finally:
-        if os.path.exists(SOCKET_PATH): os.remove(SOCKET_PATH)
-        server_socket.close()
+        if os.path.exists(TPS_SOCKET_PATH):
+            os.remove(TPS_SOCKET_PATH)
 
 if __name__ == "__main__":
-    start_service()
+    start_server()
