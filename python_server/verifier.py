@@ -8,7 +8,7 @@ class VerifierHandler(BaseHTTPRequestHandler):
         data = urllib.parse.parse_qs(post_data)
         
         print("\n" + "="*50)
-        print("🚨 LE BARMAN A RECU UNE PREUVE DU WALLET ! 🚨")
+        print("/!\\ LE BARMAN A RECU UNE PREUVE DU WALLET ! /!\\")
         print(f"-> Attribut 'Majeur' certifie par le TEE : {data.get('token', [''])[0]}")
         print("-> Acces autorise.")
         print("="*50 + "\n")
