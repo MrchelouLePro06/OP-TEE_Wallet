@@ -5,112 +5,81 @@
 #include <tee_client_api.h>
 #include "storage_data_ta.h"
 
-/* --- USAGE --- */
 void usage(const char *app_name) {
-    fprintf(stderr, "Usage:\n");
-    fprintf(stderr, "  %s add <nom_doc> <contenu>\n", app_name);
-    fprintf(stderr, "  %s get <nom_doc>\n", app_name);
-    fprintf(stderr, "  %s delete <nom_doc>\n", app_name);
-    fprintf(stderr, "  %s list\n", app_name); // Ajout du list
+    fprintf(stderr, "Usage:\n  %s add <nom_doc>\n  %s present <nom_doc> <attribut>\n  %s delete <nom_doc>\n", app_name, app_name, app_name);
     exit(1);
 }
 
 int main(int argc, char *argv[]) {
-    TEEC_Result res;
-    TEEC_Context ctx;
-    TEEC_Session sess;
-    TEEC_Operation op;
-    TEEC_UUID uuid = TA_STORAGE_DATA_UUID;
-    uint32_t err_origin;
+    TEEC_Result res; TEEC_Context ctx; TEEC_Session sess; TEEC_Operation op;
+    TEEC_UUID uuid = TA_STORAGE_DATA_UUID; uint32_t err_origin;
 
     if (argc < 2) usage(argv[0]);
 
-    // 1. Initialisation du Contexte
     res = TEEC_InitializeContext(NULL, &ctx);
-    if (res != TEEC_SUCCESS) errx(1, "TEEC_InitializeContext failed 0x%x", res);
+    if (res != TEEC_SUCCESS) errx(1, "Init Context failed 0x%x", res);
 
-    // 2. Ouverture de session vers la TA Storage
     res = TEEC_OpenSession(&ctx, &sess, &uuid, TEEC_LOGIN_PUBLIC, NULL, NULL, &err_origin);
-    if (res != TEEC_SUCCESS) errx(1, "TEEC_OpenSession failed 0x%x origin 0x%x", res, err_origin);
+    if (res != TEEC_SUCCESS) errx(1, "Open Session failed 0x%x", res);
 
     memset(&op, 0, sizeof(op));
 
-    // --- CAS : ADD DOCUMENT ---
     if (strcmp(argv[1], "add") == 0) {
-        if (argc != 4) usage(argv[0]);
-
-        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_INPUT,
-                                         TEEC_NONE, TEEC_NONE);
-        
-        op.params[0].tmpref.buffer = argv[2]; 
-        op.params[0].tmpref.size = strlen(argv[2]) + 1; // +1 pour le '\0'
-        op.params[1].tmpref.buffer = argv[3]; 
-        op.params[1].tmpref.size = strlen(argv[3]) + 1; // +1 pour le '\0'
-
-        res = TEEC_InvokeCommand(&sess, CMD_ADD_DOCUMENT, &op, &err_origin);
-        if (res == TEEC_SUCCESS) printf("SUCCESS: Document added\n");
-        else printf("ERROR: Failed to add document (0x%x)\n", res);
-    }
-
-    // --- CAS : GET DOCUMENT ---
-    else if (strcmp(argv[1], "get") == 0) {
         if (argc != 3) usage(argv[0]);
 
-        char read_buf[4096]; 
-        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_OUTPUT,
-                                         TEEC_NONE, TEEC_NONE);
+        SecureDocument my_doc;
+        memset(&my_doc, 0, sizeof(SecureDocument));
+        strncpy(my_doc.doc_type, argv[2], sizeof(my_doc.doc_type) - 1);
+        my_doc.attr_count = 3;
+
+        if (strcmp(argv[2], "mineur") == 0) {
+            strcpy(my_doc.attrs[0].key, "Nom");       strcpy(my_doc.attrs[0].value, "Martin");
+            strcpy(my_doc.attrs[1].key, "Prenom");    strcpy(my_doc.attrs[1].value, "Lucas");
+            strcpy(my_doc.attrs[2].key, "Majeur");    strcpy(my_doc.attrs[2].value, "Non");
+        } else {
+            strcpy(my_doc.attrs[0].key, "Nom");       strcpy(my_doc.attrs[0].value, "Dupont");
+            strcpy(my_doc.attrs[1].key, "Prenom");    strcpy(my_doc.attrs[1].value, "Jean");
+            strcpy(my_doc.attrs[2].key, "Majeur");    strcpy(my_doc.attrs[2].value, "Oui");
+        }
+
+        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_INPUT, TEEC_NONE, TEEC_NONE);
+        op.params[0].tmpref.buffer = argv[2]; 
+        op.params[0].tmpref.size = strlen(argv[2]) + 1;
+        op.params[1].tmpref.buffer = &my_doc; 
+        op.params[1].tmpref.size = sizeof(SecureDocument);
+
+        res = TEEC_InvokeCommand(&sess, CMD_ADD_DOCUMENT, &op, &err_origin);
+        if (res == TEEC_SUCCESS) printf("SUCCESS: Le profil '%s' a ete stocke.\n", argv[2]);
+        else printf("ERROR: Echec (0x%x)\n", res);
+    }
+    else if (strcmp(argv[1], "present") == 0) {
+        if (argc != 4) usage(argv[0]);
+
+        char read_buf[64] = {0}; 
+        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_OUTPUT, TEEC_NONE);
         
         op.params[0].tmpref.buffer = argv[2]; 
         op.params[0].tmpref.size = strlen(argv[2]) + 1;
-        op.params[1].tmpref.buffer = read_buf;
-        op.params[1].tmpref.size = sizeof(read_buf) - 1; // On garde 1 octet pour le '\0' final
+        op.params[1].tmpref.buffer = argv[3]; 
+        op.params[1].tmpref.size = strlen(argv[3]) + 1;
+        op.params[2].tmpref.buffer = read_buf; 
+        op.params[2].tmpref.size = sizeof(read_buf);
 
-        res = TEEC_InvokeCommand(&sess, CMD_GET_DOCUMENT, &op, &err_origin);
-        if (res == TEEC_SUCCESS) {
-            read_buf[op.params[1].tmpref.size] = '\0'; 
-            printf("CONTENT: %s\n", read_buf);
-        } else {
-            printf("ERROR: Failed to get document (0x%x)\n", res);
-        }
+        res = TEEC_InvokeCommand(&sess, CMD_PRESENT_ATTRIBUTE, &op, &err_origin);
+        
+        if (res == TEEC_SUCCESS) printf("%s\n", read_buf); 
+        else fprintf(stderr, "ERROR: Attribut introuvable\n");
     }
-
-    // --- CAS : DELETE DOCUMENT ---
     else if (strcmp(argv[1], "delete") == 0) {
         if (argc != 3) usage(argv[0]);
-
         op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_NONE, TEEC_NONE, TEEC_NONE);
         op.params[0].tmpref.buffer = argv[2];
         op.params[0].tmpref.size = strlen(argv[2]) + 1;
-
-        res = TEEC_InvokeCommand(&sess, CMD_DELETE_DOCUMENT, &op, &err_origin);
-        if (res == TEEC_SUCCESS) printf("SUCCESS: Document deleted\n");
-        else printf("ERROR: Failed to delete document (0x%x)\n", res);
+        TEEC_InvokeCommand(&sess, CMD_DELETE_DOCUMENT, &op, &err_origin);
+        printf("SUCCESS: Document supprime.\n");
     }
+    else { usage(argv[0]); }
 
-    // --- CAS : LIST DOCUMENTS ---
-    else if (strcmp(argv[1], "list") == 0) {
-        if (argc != 2) usage(argv[0]);
-
-        char list_buf[4096];
-        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_OUTPUT, TEEC_NONE, TEEC_NONE, TEEC_NONE);
-        op.params[0].tmpref.buffer = list_buf;
-        op.params[0].tmpref.size = sizeof(list_buf);
-
-        res = TEEC_InvokeCommand(&sess, CMD_LIST_DOCUMENTS, &op, &err_origin);
-        if (res == TEEC_SUCCESS) {
-            printf("DOCUMENTS: %s\n", list_buf);
-        } else {
-            printf("ERROR: Failed to list documents (0x%x)\n", res);
-        }
-    }
-
-    else {
-        usage(argv[0]);
-    }
-
-    // 3. Fermeture
-    TEEC_CloseSession(&sess);
-    TEEC_FinalizeContext(&ctx);
-
+    TEEC_CloseSession(&sess); TEEC_FinalizeContext(&ctx);
     return 0;
 }
