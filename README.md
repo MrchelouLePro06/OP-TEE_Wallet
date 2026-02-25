@@ -90,7 +90,7 @@ chmod +x demo.sh
 ```
 Regardez ensuite votre Terminal Hôte 1 réagir en direct aux preuves (Accès Autorisé / Refusé) générées par la TrustZone !
 
-##🛡️ Concepts Techniques Illustrés
+## 🛡️ Concepts Techniques Illustrés
 Hardware Isolation : Prévention du vol de données même en cas de compromission root de l'OS Android/Linux (utilisation de TEE_Malloc et TEE_CreatePersistentObject).
 
 Privacy-by-Design : La TrustZone empêche techniquement le croisement de données en ne relâchant qu'un attribut précis plutôt que le payload complet.
