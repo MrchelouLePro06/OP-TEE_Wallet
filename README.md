@@ -10,8 +10,7 @@ build/common.mk
 
 ces paramètres sont nécessaires pour exécuter du code python ainsi que de pouvoir avoir accès au dossiers partagés.
 
-
-
+---
 
 Ce projet est une preuve de concept (POC) d'un portefeuille d'identité numérique (EUDI Wallet) basé sur l'isolation matérielle **ARM TrustZone** via le système d'exploitation **OP-TEE**. 
 
