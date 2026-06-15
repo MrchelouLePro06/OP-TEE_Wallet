@@ -9,6 +9,7 @@
 
 
 #define TA_SCHNORR_ZKP_CMD		0
+#define TA_SCHNORR_ZKP_MULTI_ATTRIBUTE_CMD		1
 
 
 #endif
