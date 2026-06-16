@@ -47,35 +47,71 @@ def verify_izkp_geometry(X, u, c, z):
     return u_prime == u
 
 def verify_multi_attribute_nizkp(X1, X2, msg, z1, z2, c1, c2, mode_str):
-    """
-    Vérifie une preuve multi-attribut (AND/OR) en parfaite conformité
-    avec les appels TEE_DigestUpdate de la TA OP-TEE.
-    """
     try:
-        # 1. Réduction géométrique : Calcul des engagements théoriques U1' et U2'
-        U1_prime = (gen * z1) + (X1 * (-c1 % p))
-        U2_prime = (gen * z2) + (X2 * (-c2 % p))
+        print("\n--- SERVEUR : ANALYSE INTERNE DE LA VÉRIFICATION ---")
+        field = curve.curve.p()
+        
+        # 1. Calcul des opposés pour la soustraction
+        X1_neg = Point(curve.curve, X1.x(), (-X1.y()) % field)
+        X2_neg = Point(curve.curve, X2.x(), (-X2.y()) % field)
 
-        # 2. Reconstitution de l'oracle SHA256 (Ordre et variables stricts de la TA)
+        # 2. Reconstruction géométrique des engagements temporaires (U')
+        U1_prime = (gen * z1) + (X1_neg * c1)
+        U2_prime = (gen * z2) + (X2_neg * c2)
+
+        print(f"[SERVEUR-RECONSTRUCT] U1_prime.X = {U1_prime.x():064X}")
+        print(f"[SERVEUR-RECONSTRUCT] U1_prime.Y = {U1_prime.y():064X}")
+        print(f"[SERVEUR-RECONSTRUCT] U2_prime.X = {U2_prime.x():064X}")
+        print(f"[SERVEUR-RECONSTRUCT] U2_prime.Y = {U2_prime.y():064X}")
+
+        # 3. Préparation des dumps de l'oracle de hachage
         h = hashlib.sha256()
-        h.update(X1.x().to_bytes(32, 'big'))  # pub_X1_bytes_x
-        h.update(X2.x().to_bytes(32, 'big'))  # pub_X2_bytes_x
-        if msg:
-            h.update(msg.encode('utf-8'))     # msg
-        h.update(U1_prime.x().to_bytes(32, 'big'))  # u1_bytes_x
-        h.update(U2_prime.x().to_bytes(32, 'big'))  # u2_bytes_x
+        
+        # On stocke dans des variables pour pouvoir les print avant le update
+        b_X1x = X1.x().to_bytes(32, 'big')
+        b_X1y = X1.y().to_bytes(32, 'big')
+        b_X2x = X2.x().to_bytes(32, 'big')
+        b_X2y = X2.y().to_bytes(32, 'big')
+        b_msg = msg.encode('utf-8') if msg else b""
+        b_U1x = U1_prime.x().to_bytes(32, 'big')
+        b_U1y = U1_prime.y().to_bytes(32, 'big')
+        b_U2x = U2_prime.x().to_bytes(32, 'big')
+        b_U2y = U2_prime.y().to_bytes(32, 'big')
+
+        print("\n--- TRAIN DE HACHAGE TRANSMIS À L'ORACLE PYTHON ---")
+        print(f"1. h.update(X1.x)  -> {b_X1x.hex().upper()}")
+        print(f"2. h.update(X1.y)  -> {b_X1y.hex().upper()}")
+        print(f"3. h.update(X2.x)  -> {b_X2x.hex().upper()}")
+        print(f"4. h.update(X2.y)  -> {b_X2y.hex().upper()}")
+        print(f"5. h.update(msg)   -> {b_msg.hex().upper()} ('{msg}')")
+        print(f"6. h.update(U1'.x) -> {b_U1x.hex().upper()}")
+        print(f"7. h.update(U1'.y) -> {b_U1y.hex().upper()}")
+        print(f"8. h.update(U2'.x) -> {b_U2x.hex().upper()}")
+        print(f"9. h.update(U2'.y) -> {b_U2y.hex().upper()}")
+
+        # Exécution du hachage
+        h.update(b_X1x)
+        h.update(b_X1y)
+        h.update(b_X2x)
+        h.update(b_X2y)
+        if msg: h.update(b_msg)
+        h.update(b_U1x)
+        h.update(b_U1y)
+        h.update(b_U2x)
+        h.update(b_U2y)
         
         c_global_serveur = int(h.hexdigest(), 16) % p
+        print(f"\n[SERVEUR-RESULT] c_global recalculé = {c_global_serveur:064X}")
+        print(f"[SERVEUR-REÇU]   c1 reçu du client   = {c1:064X}")
+        print(f"[SERVEUR-REÇU]   c2 reçu du client   = {c2:064X}")
 
-        # 3. Vérification des contraintes du prédicat logique
         if mode_str == "and":
-            # Mode AND : c1 et c2 doivent être égaux au défi global de l'oracle
-            return c1 == c2 and c1 == c_global_serveur
-        elif mode_str == "or":
-            # Mode OR : la somme des défis doit être égale au défi global de l'oracle
-            return (c1 + c2) % p == c_global_serveur
-        else:
-            return False
+            res_bool = (c1 == c2 and c1 == c_global_serveur)
+            print(f"[SERVEUR-VERDICT] Match logique AND ? -> {res_bool}\n")
+            return res_bool
+        return False
 
     except Exception as e:
-        raise RuntimeError(f"Erreur interne lors de la vérification multi-attribut : {str(e)}")
+        print("[CRASH CRYPTO SERVEUR]")
+        traceback.print_exc()
+        return False

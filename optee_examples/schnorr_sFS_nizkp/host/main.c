@@ -45,7 +45,7 @@ int main(int argc, char *argv[])
     memset(&op, 0, sizeof(op));
 
     // =====================================================================
-    // CAS 1 : MODE CLASSIQUE (MONO-ATTRIBUT)
+    // CAS 1 : MODE CLASSIQUE (MONO-ATTRIBUT) - SÉPARÉ EN X ET U
     // =====================================================================
     if (strcmp(mode_str, "classic") == 0) {
         uint8_t out_combined[128];
@@ -71,12 +71,17 @@ int main(int argc, char *argv[])
             errx(1, "TEEC_InvokeCommand (classic) failed 0x%x", res);
         }
 
-        char combined_hex[257];
+        char x_hex[129]; // Clé publique X (64 octets = 128 hex)
+        char u_hex[129]; // Engagement u (64 octets = 128 hex)
         char z_hex[65];
         char c_hex[65];
         
-        for(int i = 0; i < 128; i++) {
-            sprintf(&combined_hex[i * 2], "%02X", out_combined[i]);
+        // Découpage de out_combined : première moitié = X, deuxième moitié = u
+        for(int i = 0; i < 64; i++) {
+            sprintf(&x_hex[i * 2], "%02X", out_combined[i]);
+        }
+        for(int i = 0; i < 64; i++) {
+            sprintf(&u_hex[i * 2], "%02X", out_combined[64 + i]);
         }
         for(int i = 0; i < 32; i++) {
             sprintf(&z_hex[i * 2], "%02X", out_z[i]);
@@ -85,27 +90,29 @@ int main(int argc, char *argv[])
             sprintf(&c_hex[i * 2], "%02X", out_c[i]);
         }
 
-        printf("NIZKP_PROOF_CLASSIC:%s:%s:%s:%s\n", msg, combined_hex, z_hex, c_hex);
+        // Trame réseau transmise à ree_client.py (6 éléments après split)
+        printf("NIZKP_PROOF_CLASSIC:%s:%s:%s:%s:%s\n", msg, x_hex, u_hex, z_hex, c_hex);
+        
+        // Affichage visuel de contrôle (sur stderr pour ne pas perturber Python)
+        fprintf(stderr, "[REE-MONO] Clé publique X : %s\n", x_hex);
+        fprintf(stderr, "[REE-MONO] Engagement u   : %s\n", u_hex);
+        fprintf(stderr, "[REE-MONO] Réponse z      : %s\n", z_hex);
+        fprintf(stderr, "[REE-MONO] Défi c         : %s\n", c_hex);
     }
     // =====================================================================
-    // CAS 2 : MODES MULTI-ATTRIBUTS (AND / OR) -> PLIAGE DU REE AU TEE
+    // CAS 2 : MODES MULTI-ATTRIBUTS (AND / OR)
     // =====================================================================
     else if (strcmp(mode_str, "and") == 0 || strcmp(mode_str, "or") == 0) {
         mode = (strcmp(mode_str, "and") == 0) ? MODE_AND : MODE_OR;
 
         size_t in_size = sizeof(uint32_t) + strlen(msg);
         uint8_t *in_buffer = malloc(in_size);
-        if (!in_buffer) {
-            errx(1, "Malloc failed");
-        }
-
         memcpy(in_buffer, &mode, sizeof(uint32_t));
         memcpy(in_buffer + sizeof(uint32_t), msg, strlen(msg));
 
-        // Buffers de réception alignés sur les tailles de ta TA
-        uint8_t buffer_keys[128]; 
-        uint8_t buffer_u[128];    
-        uint8_t buffer_zc[64];    // z1(32) + z2(32) ou c1(32) + c2(32) selon GlobalPlatform
+        uint8_t buffer_combined[256]; 
+        uint8_t buffer_z[64];   
+        uint8_t buffer_c[64];   
 
         op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,
                                          TEEC_MEMREF_TEMP_OUTPUT,
@@ -115,48 +122,49 @@ int main(int argc, char *argv[])
         op.params[0].tmpref.buffer = in_buffer;
         op.params[0].tmpref.size = in_size;
         
-        op.params[1].tmpref.buffer = buffer_keys;
-        op.params[1].tmpref.size = sizeof(buffer_keys);
+        op.params[1].tmpref.buffer = buffer_combined;
+        op.params[1].tmpref.size = sizeof(buffer_combined);
         
-        op.params[2].tmpref.buffer = buffer_u;
-        op.params[2].tmpref.size = sizeof(buffer_u);
+        op.params[2].tmpref.buffer = buffer_z;
+        op.params[2].tmpref.size = sizeof(buffer_z);
         
-        // pParams[3] reçoit out_c de ta TA (64 octets = c1 + c2)
-        op.params[3].tmpref.buffer = buffer_zc;
-        op.params[3].tmpref.size = sizeof(buffer_zc);
+        op.params[3].tmpref.buffer = buffer_c;
+        op.params[3].tmpref.size = sizeof(buffer_c);
 
         res = TEEC_InvokeCommand(&sess, TA_SCHNORR_ZKP_MULTI_ATTRIBUTE_CMD, &op, &err_origin);
         free(in_buffer);
         if (res != TEEC_SUCCESS) {
-            errx(1, "TEEC_InvokeCommand (multi) failed 0x%x", res);
+            errx(1, "TEEC_InvokeCommand failed");
         }
 
-        // --- RECONSTRUCTION DU FORMAT EXIGÉ PAR TON REE_CLIENT.PY ---
-        char x_hex[257]; // Fusion des clés (128 octets = 256 chars hex)
-        char u_hex[257]; // Fusion des commitments (128 octets = 256 chars hex)
-        char z_hex[129]; // Réponses scalaires (64 octets = 128 chars hex)
-        char c_hex[129]; // Défis scalaires (64 octets = 128 chars hex)
+        // --- SÉRIALISATION HEXADÉCIMALE MULTI ---
+        char x_hex[257]; 
+        char u_hex[257]; 
+        char z_hex[129]; 
+        char c_hex[129];
 
-        // Conversion Hexadécimale
         for(int i = 0; i < 128; i++) {
-            sprintf(&x_hex[i * 2], "%02X", buffer_keys[i]);
+            sprintf(&x_hex[i * 2], "%02X", buffer_combined[i]);
         }
         for(int i = 0; i < 128; i++) {
-            sprintf(&u_hex[i * 2], "%02X", buffer_u[i]);
-        }
-        
-        // Extraction des buffers de scalaires de la TA
-        // Note : op.params[2].tmpref.buffer (out_z de la TA) contient z1 et z2 (64 octets)
-        for(int i = 0; i < 64; i++) {
-            sprintf(&z_hex[i * 2], "%02X", buffer_u[i]); // Récupère le out_z mappé sur op.params[2]
+            sprintf(&u_hex[i * 2], "%02X", buffer_combined[128 + i]);
         }
         for(int i = 0; i < 64; i++) {
-            sprintf(&c_hex[i * 2], "%02X", buffer_zc[i]); // Récupère le out_c mappé sur op.params[3]
+            sprintf(&z_hex[i * 2], "%02X", buffer_z[i]);
+        }
+        for(int i = 0; i < 64; i++) {
+            sprintf(&c_hex[i * 2], "%02X", buffer_c[i]);
         }
 
-        // Affichage de l'en-tête STRICTEMENT attendu par la regex de ton ree_client.py
+        // L'unique ligne lue par ree_client.py (6 éléments après split)
         printf("NIZKP_PROOF_MULTI_%s:%s:%s:%s:%s:%s\n", 
                (mode == MODE_AND) ? "AND" : "OR", msg, x_hex, u_hex, z_hex, c_hex);
+        
+        // Affichage visuel corrigé avec les %s (sur stderr)
+        fprintf(stderr, "[REE-MULTI] Clés publiques : %s\n", x_hex);
+        fprintf(stderr, "[REE-MULTI] Engagements    : %s\n", u_hex);
+        fprintf(stderr, "[REE-MULTI] Réponses z     : %s\n", z_hex);
+        fprintf(stderr, "[REE-MULTI] Défis c        : %s\n", c_hex);
     } 
     else {
         fprintf(stderr, "[-] Mode inconnu. Choix possibles : classic, and, or\n");

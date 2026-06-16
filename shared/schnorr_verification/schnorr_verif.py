@@ -30,37 +30,41 @@ def handle_client_data(data_str, client_address):
     protocol_header = parts[0]
 
     ###########################################################################
-    # MODE NON-INTERACTIF INITIAL (NIZKP_PROOF) - 7 ÉLÉMENTS D'ORIGINE
+    # MODE NON-INTERACTIF INITIAL (NIZKP_PROOF) - 6 ÉLÉMENTS D'ORIGINE
     ###########################################################################
-    if protocol_header == "NIZKP_PROOF":
+    if protocol_header == "NIZKP_PROOF_CLASSIC":
         print(f"[NIZKP] Réception d'une attestation de {client_address}")
         try:
-            if len(parts) != 7:
-                return f"ERROR:Format NIZKP invalide. Attendu 7 éléments, reçu {len(parts)}\n"
+            if len(parts) != 6:
+                return f"ERROR:Format NIZKP classique invalide. Attendu 6 éléments, reçu {len(parts)}\n"
 
             msg_en_clair = parts[1]
-            pub_x_str = parts[2]
-            pub_y_str = parts[3]
-            u_hex = parts[4]
-            z_scalar = int(parts[5], 16)
-            c_scalar = int(parts[6], 16)
+            x_hex = parts[2]        # Clé publique X unique (128 char hex = 64 octets)
+            u_hex = parts[3]        # Engagement u unique (128 char hex = 64 octets)
+            z_hex = parts[4]        # Réponse scalaire z (64 char hex = 32 octets)
+            c_hex = parts[5]        # Défi scalaire c (64 char hex = 32 octets)
 
-            X_x = int(pub_x_str, 16)
-            X_y = int(pub_y_str, 16)
-            X_identity = Point(schnorr_crypto.curve.curve, X_x, X_y)
+            if len(x_hex) != 128 or len(u_hex) != 128:
+                return "ERROR:Tailles des blocs hexadécimaux classiques invalides\n"
 
-            if len(u_hex) != 128:
-                return f"ERROR:Taille de l'engagement u invalide ({len(u_hex)} hex)\n"
+            # Extraction géométrique des coordonnées du point de clé publique X
+            X_identity = Point(schnorr_crypto.curve.curve, int(x_hex[0:64], 16), int(x_hex[64:128], 16))
 
-            u_x = int(u_hex[0:64], 16)
-            u_y = int(u_hex[64:128], 16)
-            u_point = Point(schnorr_crypto.curve.curve, u_x, u_y)
+            # Extraction géométrique des coordonnées du point d'engagement u
+            u_point = Point(schnorr_crypto.curve.curve, int(u_hex[0:64], 16), int(u_hex[64:128], 16))
 
+            # Conversion des scalaires
+            z_scalar = int(z_hex, 16)
+            c_scalar = int(c_hex, 16)
+
+            # Vérification géométrique de la preuve
             is_valid = schnorr_crypto.verify_izkp_geometry(X_identity, u_point, c_scalar, z_scalar)
             
             if is_valid:
+                print(f"    [VERDICT] Preuve classique validée avec succès.\n")
                 return f"VERDICT:SUCCESS:{msg_en_clair}\n"
             else:
+                print("    [VERDICT] Échec de la vérification géométrique classique.")
                 return "VERDICT:FAILED\n"
 
         except ValueError:

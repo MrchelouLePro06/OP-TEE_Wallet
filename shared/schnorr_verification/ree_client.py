@@ -39,8 +39,8 @@ def execute_nizkp(sock, sub_mode, msg):
     header = parts[0]
     
     # Validation adaptative selon le format produit par le main.c du REE
-    if header == "NIZKP_PROOF_CLASSIC" and len(parts) != 5:
-        print(f"[-] Erreur : Format classique non conforme (Reçu {len(parts)}/5).")
+    if header == "NIZKP_PROOF_CLASSIC" and len(parts) != 6:
+        print(f"[-] Erreur : Format classique non conforme (Reçu {len(parts)}/6).")
         return
     elif header in ["NIZKP_PROOF_MULTI_AND", "NIZKP_PROOF_MULTI_OR"] and len(parts) != 6:
         print(f"[-] Erreur : Format multi-attribut non conforme (Reçu {len(parts)}/6).")
@@ -162,4 +162,4 @@ def main():
         sock.close()
 
 if __name__ == "__main__":
-    诚 = main()
+    main()

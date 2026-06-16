@@ -64,22 +64,18 @@ static const uint8_t pub_X1_bytes_y[32] = {
 
 // --- ATTRIBUT 2 ---
 static const uint8_t private_x2_bytes[32] = {
-    0x5A, 0x1F, 0x3D, 0x8E, 0x99, 0x42, 0x11, 0xAA, 
-    0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x12, 0x34, 0x56,
-    0x78, 0x90, 0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56, 
-    0x78, 0x90, 0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56
+    0x45, 0x1A, 0xAF, 0x69, 0xB4, 0xFB, 0x16, 0x34, 0xC6, 0x18, 0x50, 0xD8, 0xE9, 0x24, 0xEF, 0x40,
+    0xDC, 0x98, 0x17, 0x9C, 0x98, 0x29, 0x81, 0xBA, 0x60, 0x83, 0xEA, 0x4E, 0x81, 0xEA, 0x53, 0xA9
 };
+
 static const uint8_t pub_X2_bytes_x[32] = {
-    0x12, 0x34, 0x56, 0x78, 0x90, 0xAB, 0xCD, 0xEF, 
-    0x12, 0x34, 0x56, 0x78, 0x90, 0xAB, 0xCD, 0xEF,
-    0x12, 0x34, 0x56, 0x78, 0x90, 0xAB, 0xCD, 0xEF, 
-    0x12, 0x34, 0x56, 0x78, 0x90, 0xAB, 0xCD
+    0x98, 0x05, 0x9D, 0x21, 0xE5, 0xDA, 0x06, 0x69, 0x5F, 0xD9, 0x86, 0x5E, 0xC8, 0x68, 0x0C, 0x8C,
+    0x50, 0x37, 0xC0, 0x2D, 0xF1, 0xA3, 0xF6, 0x94, 0x9F, 0x74, 0xA3, 0xC1, 0xA9, 0x58, 0x4B, 0x85
 };
+
 static const uint8_t pub_X2_bytes_y[32] = {
-    0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10, 
-    0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10,
-    0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10, 
-    0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32
+    0xC6, 0xD8, 0xB3, 0x1B, 0x14, 0x33, 0x5E, 0xE0, 0x4F, 0x77, 0x83, 0x30, 0xF3, 0x75, 0x1D, 0x68,
+    0xC1, 0xE1, 0x31, 0xC9, 0x7F, 0x47, 0xA8, 0xD4, 0x21, 0x18, 0xD0, 0x0A, 0x9B, 0xB1, 0x43, 0xA8
 };
 
 /**
@@ -336,15 +332,20 @@ TEE_Result schnorr_multi_attribute(uint32_t nParamTypes, TEE_Param pParams[4])
         if (res != TEE_SUCCESS) {
             goto cleanup_all;
         }
+        tmp_len = 32;
         TEE_GetObjectBufferAttribute(hTransient_r2, TEE_ATTR_ECC_PUBLIC_VALUE_X, u2_bytes_x, &tmp_len);
         TEE_GetObjectBufferAttribute(hTransient_r2, TEE_ATTR_ECC_PUBLIC_VALUE_Y, u2_bytes_y, &tmp_len);
         TEE_GetObjectBufferAttribute(hTransient_r2, TEE_ATTR_ECC_PRIVATE_VALUE, r2_bytes, &tmp_len);
 
-        TEE_DigestUpdate(opSha256, pub_X1_bytes_x, 32); 
-        TEE_DigestUpdate(opSha256, pub_X2_bytes_x, 32);    
+        TEE_DigestUpdate(opSha256, pub_X1_bytes_x, 32);
+        TEE_DigestUpdate(opSha256, pub_X1_bytes_y, 32);
+        TEE_DigestUpdate(opSha256, pub_X2_bytes_x, 32);
+        TEE_DigestUpdate(opSha256, pub_X2_bytes_y, 32);    
         TEE_DigestUpdate(opSha256, msg, msg_len); 
         TEE_DigestUpdate(opSha256, u1_bytes_x, 32); 
-        TEE_DigestUpdate(opSha256, u2_bytes_x, 32); 
+        TEE_DigestUpdate(opSha256, u1_bytes_y, 32);
+        TEE_DigestUpdate(opSha256, u2_bytes_x, 32);
+        TEE_DigestUpdate(opSha256, u2_bytes_y, 32);
 
         uint32_t q_c_len = 32;
         res = TEE_DigestDoFinal(opSha256, NULL, 0, c_global_bytes, &q_c_len);
@@ -380,10 +381,14 @@ TEE_Result schnorr_multi_attribute(uint32_t nParamTypes, TEE_Param pParams[4])
         TEE_GenerateRandom(u2_bytes_y, 32);
 
         TEE_DigestUpdate(opSha256, pub_X1_bytes_x, 32); 
-        TEE_DigestUpdate(opSha256, pub_X2_bytes_x, 32);    
+        TEE_DigestUpdate(opSha256, pub_X1_bytes_y, 32);
+        TEE_DigestUpdate(opSha256, pub_X2_bytes_x, 32);
+        TEE_DigestUpdate(opSha256, pub_X2_bytes_y, 32);
         TEE_DigestUpdate(opSha256, msg, msg_len); 
         TEE_DigestUpdate(opSha256, u1_bytes_x, 32); 
-        TEE_DigestUpdate(opSha256, u2_bytes_x, 32); 
+        TEE_DigestUpdate(opSha256, u1_bytes_y, 32);
+        TEE_DigestUpdate(opSha256, u2_bytes_x, 32);
+        TEE_DigestUpdate(opSha256, u2_bytes_y, 32);
 
         uint32_t q_c_len = 32;
         res = TEE_DigestDoFinal(opSha256, NULL, 0, c_global_bytes, &q_c_len);
@@ -410,11 +415,16 @@ TEE_Result schnorr_multi_attribute(uint32_t nParamTypes, TEE_Param pParams[4])
         goto cleanup_all; 
     }
 
-    memcpy(out_combined, u1_bytes_x, 32); 
-    memcpy(out_combined + 32, u1_bytes_y, 32);
-    memcpy(out_combined + 64, u2_bytes_x, 32); 
-    memcpy(out_combined + 96, u2_bytes_y, 32);
-    pParams[1].memref.size = 128;
+    memcpy(out_combined, pub_X1_bytes_x, 32);
+    memcpy(out_combined + 32, pub_X1_bytes_y, 32);
+    memcpy(out_combined + 64, pub_X2_bytes_x, 32);
+    memcpy(out_combined + 96, pub_X2_bytes_y, 32);
+
+    memcpy(out_combined + 128, u1_bytes_x, 32);
+    memcpy(out_combined + 160, u1_bytes_y, 32);
+    memcpy(out_combined + 192, u2_bytes_x, 32); 
+    memcpy(out_combined + 224, u2_bytes_y, 32);
+    pParams[1].memref.size = 256;
     
     memcpy(out_z, z1_bytes, 32); 
     memcpy(out_z + 32, z2_bytes, 32); 
@@ -424,43 +434,76 @@ TEE_Result schnorr_multi_attribute(uint32_t nParamTypes, TEE_Param pParams[4])
     memcpy(out_c + 32, c2_bytes, 32); 
     pParams[3].memref.size = 64;
 
-    // --- SÉRIALISATION 100% DYNAMIQUE DES CLÉS PUBLIQUES + RÉSULTATS ---
-    char x1_hex[129];
-    char x2_hex[129];
-    char u_hex[257];
-    char z_hex[129];
-    char c_hex[129];
-    uint32_t i;
+    // --- affichage des données envoyées ---
+    printf("\n--- SECURE WORLD : CONTENU DES BUFFERS DE SORTIE ---\n");
+    int i;
+    // 1. Affichage de la première moitié de out_combined (Les Clés Publiques X1 et X2)
+    printf("[TA-OUT] X1 (0 a 63 octets) :\n  ");
+    for (i = 0; i < 64; i++) {
+        printf("%02X", out_combined[i]);
+    }
+
+    printf("[TA-OUT] X2 (64 a 127 octets) :\n  ");
+    for (i = 64; i < 128; i++) {
+        printf("%02X", out_combined[i]);
+    }
     
-    // Concaténation X1 (x || y) = 64 octets = 128 hex chars
-    for(i=0; i<32; i++) {
-        sprintf(&x1_hex[i*2], "%02X", pub_X1_bytes_x[i]);
-    }
-    for(i=0; i<32; i++) {
-        sprintf(&x1_hex[64 + i*2], "%02X", pub_X1_bytes_y[i]);
+    printf("[TA-OUT] X (X1 + X2) (0 a 127 octets) :\n  ");
+    for (i = 0; i < 128; i++) {
+        printf("%02X", out_combined[i]);
     }
 
-    // Concaténation X2 (x || y) = 64 octets = 128 hex chars
-    for(i=0; i<32; i++) {
-        sprintf(&x2_hex[i*2], "%02X", pub_X2_bytes_x[i]);
-    }
-    for(i=0; i<32; i++) {
-        sprintf(&x2_hex[64 + i*2], "%02X", pub_X2_bytes_y[i]);
+    // Les Engagements u1 et u2
+    printf("\n[TA-OUT] u1 (128 a 191 octets) :\n  ");
+    for (i = 128; i < 192; i++) {
+        printf("%02X", out_combined[i]);
     }
 
-    for(i=0; i<128; i++) {
-        sprintf(&u_hex[i*2], "%02X", out_combined[i]);
+    printf("\n[TA-OUT] u2 (192 a 255 octets) :\n  ");
+    for (i = 192; i < 256; i++) {
+        printf("%02X", out_combined[i]);
     }
-    for(i=0; i<64;  i++) {
-        sprintf(&z_hex[i*2], "%02X", out_z[i]);
+
+    printf("\n[TA-OUT] Engagement u (128 a 255 octets) :\n  ");
+    for (i = 0; i < 128; i++) {
+        printf("%02X", out_combined[128 + i]);
     }
-    for(i=0; i<64;  i++) {
-        sprintf(&c_hex[i*2], "%02X", out_c[i]);
+
+    //Les Réponses scalaires z1 et z2
+    printf("\n[TA-OUT] z1 (0 a 31 octets) :\n  ");
+    for (i = 0; i < 32; i++) {
+        printf("%02X", out_z[i]);
     }
+
+    printf("\n[TA-OUT] z2 (32 a 63 octets) :\n  ");
+    for (i = 32; i < 64; i++) {
+        printf("%02X", out_z[i]);
+    }
+
+    printf("\n[TA-OUT] Reponses z (0 a 63 octets) :\n  ");
+    for (i = 0; i < 64; i++) {
+        printf("%02X", out_z[i]);
+    }
+
+    //Les Défis scalaires c1 et c2
+    printf("\n[TA-OUT] c1 (0 a 31 octets) :\n  ");
+    for (i = 0; i < 32; i++) {
+        printf("%02X", out_c[i]);
+    }
+
+    printf("\n[TA-OUT] c2 (32 a 63 octets) :\n  ");
+    for (i = 32; i < 64; i++) {
+        printf("%02X", out_c[i]);
+    }
+
+    printf("\n[TA-OUT] Defis c (0 a 63 octets) :\n  ");
+    for (i = 0; i < 64; i++) {
+        printf("%02X", out_c[i]);
+    }
+    
+    printf("\n----------------------------------------------------\n\n");
 
     // Émission du paquet réseau globalisé dynamique au REE
-    printf("NIZKP_MULTI_PROOF:%s:%s:%s:%s:%s:%s:%s\n", 
-           (mode == MODE_AND) ? "and" : "or", msg, x1_hex, x2_hex, u_hex, z_hex, c_hex);
     res = TEE_SUCCESS;
 
 cleanup_all:
