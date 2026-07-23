@@ -1,120 +1,115 @@
 #!/usr/bin/env python3
 import socket
 import json
-import base64
+import os
 import time
 import secrets
+import traceback
+from jwcrypto import jwk
+from sd_jwt.verifier import SDJWTVerifier
+from templates import get_random_required_claims, TEMPLATES
 
-VERIFIER_HOST = "0.0.0.0"
 VERIFIER_PORT = 12343
+KEY_FILE = "issuer_public_key.json"
 
-def decode_base64url(s):
-    rem = len(s) % 4
-    if rem > 0: s += '=' * (4 - rem)
-    return base64.urlsafe_b64decode(s.encode('utf-8'))
 
-def handle_wallet_session(client_sock):
-    try:
-    	# Donner à transmettre pour générer le bloc Proof de la VP
-        nonce_aleatoire = f"NONCE-{secrets.token_hex(12)}"
-        aud = f"https://verifier.eudas-secured.eu:{VERIFIER_PORT}"
-        iat = int(time.time())
-
-        politique_attributs = {
-            "cni": "birthdate,document_number",
-            "eudi_pid": "birthdate,nationality",
-            "structured_address": "street_address,locality",
-            "complex_structured": "family_name,given_name"
-        }
-
-        # Construction du paquet d'initiation complet transmis au Wallet
-        initiation_packet = {
-            "nonce": nonce_aleatoire,
-            "aud": aud,
-            "iat": iat,
-            "required_claims": politique_attributs
-        }
-
-        # Envoi de la configuration de sécurité au Wallet (REE)
-        client_sock.sendall(json.dumps(initiation_packet).encode('utf-8'))
-        print(f"\n[VERIFIER] Session initiée.")
-        print(f"  -> Nonce aléatoire généré : {nonce_aleatoire}")
-        print(f"  -> Audience imposée : {aud}")
-        print(f"  -> Horodatage de fraîcheur : {iat}")
-
-        # Attente de la présentation unifiée du Derived-VC en provenance du Wallet
-        data_raw = client_sock.recv(16384).decode('utf-8').strip()
-        if not data_raw:
-            client_sock.sendall(b"VERDICT:EMPTY_PRESENTATION\n")
-            return
-
-        print("\n" + "="*60)
-        print("[PRODUIT FINAL REÇU PAR LE VÉRIFICATEUR SUR LE RÉSEAU]")
-        print("="*60)
-        print(data_raw)
-        print("="*60 + "\n")
-
-        # Découpage traditionnel par tildes
-        segments = data_raw.split('~')
-        jws_initial = segments[0]
-        kb_jwt_complet = segments[-1]
-        disclosures = segments[1:-1]
+def load_issuer_key():
+    """Charge la clé publique de l'Issuer depuis le fichier JSON local."""
+    if not os.path.exists(KEY_FILE):
+        print(f"[-] ERREUR CRITIQUE : Le fichier '{KEY_FILE}' est introuvable dans le dossier courant !")
+        exit(1)
         
-        print("[VÉRIFICATEUR - ANALYSE DES DISCLOSURES EXTRAITES PAR LE TEE]")
-        for idx, disc in enumerate(disclosures, 1):
-            try:
-                dec_disc = decode_base64url(disc).decode('utf-8', errors='ignore')
-                print(f"  -> Disclosure #{idx} Décodée en clair : {dec_disc}")
-            except Exception:
-                print(f"  -> Disclosure #{idx} brute : {disc}")
+    with open(KEY_FILE, "r", encoding="utf-8") as f:
+        key_dict = json.load(f)
+        
+    print(f"[+] Clé publique de l'Issuer chargée avec succès depuis {KEY_FILE}")
+    clean_dict = {k: v for k, v in key_dict.items() if k in ["kty", "crv", "x", "y"]}
+    return jwk.JWK(**clean_dict)
 
-        # 3. Extraction et validation de la liaison matérielle certifiée par l'État (CNF)
-        jws_parts = jws_initial.split('.')
-        payload_jws_json = json.loads(decode_base64url(jws_parts[1]).decode('utf-8'))
-        cnf = payload_jws_json.get("cnf", {})
-        jwk = cnf.get("jwk", {})
-        print("\n[VÉRIFICATEUR - CERTIFICAT D'ÉTAT (JWS)]")
-        print(f"  -> Émetteur : {payload_jws_json.get('iss')}")
-        print(f"  -> Type de Credential (vct) : {payload_jws_json.get('vct')}")
-        print(f"  -> Clé Holder Matérielle (CNF) : X={jwk.get('x')[:15]}... Y={jwk.get('y')[:15]}...")
 
-        # 4. Analyse et vérification de la preuve de possession (KB-JWT) générée par OP-TEE
-        kb_parts = kb_jwt_complet.split('.')
-        if len(kb_parts) >= 2:
-            kb_payload = json.loads(decode_base64url(kb_parts[1]).decode('utf-8'))
-            print("\n[VÉRIFICATEUR - ANALYSE DE LA PREUVE EN PROVENANCE D'OP-TEE]")
-            print(f"  -> Nonce extrait : {kb_payload.get('nonce')}")
-            print(f"  -> Audience extraite : {kb_payload.get('aud')}")
-            print(f"  -> Iat extrait : {kb_payload.get('iat')}")
-            print(f"  -> Hash d'intégrité (sd_hash) : {kb_payload.get('sd_hash')}")
-            
-            # Contrôle de conformité strict du défi cryptographique
-            if kb_payload.get("nonce") == nonce_aleatoire and kb_payload.get("aud") == aud:
-                print("[✓] Signature matérielle ECDSA vérifiée contre la clé du conteneur CNF.")
-                print("[✓] Intégrité de la transaction validée (Aucun rejeu possible).")
-                print("\n[SUCCESS] Présentation validée ! Jeton 100% authentique.")
-                client_sock.sendall(b"VERDICT:SUCCESS_VALID_PRESENTATION\n")
-            else:
-                print("[-] Échec : Le nonce ou l'audience ne matchent pas les exigences du serveur.")
-                client_sock.sendall(b"VERDICT:CHALLENGE_FAILED\n")
-        else:
-            client_sock.sendall(b"VERDICT:INVALID_KB_JWT\n")
+# Instanciation de la clé au démarrage
+ISSUER_PUB_KEY = load_issuer_key()
 
-    except Exception as e:
-        print(f"[-] Erreur de session : {e}", flush=True)
-        client_sock.sendall(b"VERDICT:SERVER_ERROR\n")
-    finally:
-        client_sock.close()
+
+def cb_get_issuer_key(issuer, header):
+    """Callback exigée par SDJWTVerifier pour valider la signature initiale du JWS."""
+    return ISSUER_PUB_KEY
+
 
 def start_verifier():
-    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_sock.bind((VERIFIER_HOST, VERIFIER_PORT))
-    server_sock.listen(5)
-    print(f"[*] Vérificateur en ligne sur le port {VERIFIER_PORT}, en attente du Wallet...", flush=True)
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.bind(("0.0.0.0", VERIFIER_PORT))
+    server_socket.listen(5)
+    
+    print(f"[*] Serveur Vérificateur à l'écoute sur le port {VERIFIER_PORT}...\n")
+
     while True:
-        client_sock, client_addr = server_sock.accept()
-        handle_wallet_session(client_sock)
+        client_sock, addr = server_socket.accept()
+        print(f"[+] Connexion reçue de {addr}")
+        
+        try:
+            # 1. Envoi du Challenge d'Autorité dynamique au Wallet
+            #    Génération dynamique pour chaque connexion client
+            session_nonce = f"NONCE-{secrets.token_hex(12)}"
+            current_iat = int(time.time())
+
+            # Tirage aléatoire des claims réclamées pour tous les documents gérés
+            dynamic_required_claims = {
+                doc_name: get_random_required_claims(doc_name)
+                for doc_name in TEMPLATES.keys()
+            }
+
+            challenge = {
+                "nonce": session_nonce,
+                "aud": "https://verifier.example.com/callback",
+                "iat": current_iat,
+                "required_claims": dynamic_required_claims
+            }
+
+            print(f"[*] Envoi du Challenge (Nonce: {session_nonce})")
+            client_sock.sendall(json.dumps(challenge).encode('utf-8'))
+            
+            # 2. Réception du jeton de présentation (Verifiable Presentation - VP)
+            presentation_data = client_sock.recv(16384).decode('utf-8').strip()
+            print(f"[+] Présentation reçue du Wallet ({len(presentation_data)} octets)")
+
+            # 3. Vérification complète via la bibliothèque officielle SD-JWT
+            try:
+                verifier_inst = SDJWTVerifier(
+                    sd_jwt_presentation=presentation_data,
+                    cb_get_issuer_key=cb_get_issuer_key,
+                    expected_aud=challenge["aud"],
+                    expected_nonce=challenge["nonce"]
+                )
+                
+                # Récupération sécurisée des claims validées
+                verified_claims = {}
+                if hasattr(verifier_inst, "_sd_jwt_payload"):
+                    verified_claims = verifier_inst._sd_jwt_payload
+                elif hasattr(verifier_inst, "get_verified_claims"):
+                    res = verifier_inst.get_verified_claims
+                    verified_claims = res() if callable(res) else res
+
+                print("\n=======================================================")
+                print("🎉 VERDICT: SUCCESS ! Tout est valide !")
+                print("=======================================================")
+                print(f"Attributs certifiés par TrustZone : {json.dumps(verified_claims, indent=2)}\n")
+                
+                client_sock.sendall(b"VERDICT: SUCCESS")
+
+            except Exception as e:
+                print(f"\n[-] VERDICT: REJECT_CRYPTO_ERROR ({e})")
+                print("--- TRACEBACK COMPLET DE L'ERREUR ---")
+                traceback.print_exc()
+                print("-------------------------------------\n")
+                client_sock.sendall(f"VERDICT: REJECT_CRYPTO_ERROR ({e})".encode('utf-8'))
+
+        except Exception as err:
+            print(f"[-] Erreur réseau : {err}")
+        finally:
+            client_sock.close()
+
 
 if __name__ == "__main__":
     start_verifier()

@@ -94,27 +94,44 @@ int main(int argc, char *argv[]) {
             printf("[CA ERROR] Echec TEE_InvokeCommand : 0x%x (origin: %d)\n", result, err_origin);
         }
     }
-    else if (strcmp(action, "presentation") == 0) {
-        char *doc_name = argv[2]; char *jsonpaths = argv[3]; char *unsigned_payload = argv[4];
-        char dvc_structure_out[3072] = {0}; char signature_out[256] = {0};
-        char param0_buf[512];
-        snprintf(param0_buf, sizeof(param0_buf), "%s|%s", doc_name, jsonpaths);
+    if (strcmp(argv[1], "presentation") == 0) {
+    TEEC_Operation op;
+    memset(&op, 0, sizeof(op));
 
-        memset(&op, 0, sizeof(op));
-        op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_INPUT, TEEC_MEMREF_TEMP_OUTPUT, TEEC_MEMREF_TEMP_OUTPUT);
-        op.params[0].tmpref.buffer = param0_buf; op.params[0].tmpref.size = strlen(param0_buf);
-        op.params[1].tmpref.buffer = unsigned_payload; op.params[1].tmpref.size = strlen(unsigned_payload);
-        op.params[2].tmpref.buffer = dvc_structure_out; op.params[2].tmpref.size = sizeof(dvc_structure_out);
-        op.params[3].tmpref.buffer = signature_out; op.params[3].tmpref.size = sizeof(signature_out);
+    // 1. Paramètre 0 : "doc_name|claims" (Ex: "cni|birthdate,document_number")
+    op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, 
+                                     TEEC_MEMREF_TEMP_INPUT, 
+                                     TEEC_MEMREF_TEMP_OUTPUT, 
+                                     TEEC_MEMREF_TEMP_OUTPUT);
 
-        result = TEEC_InvokeCommand(&sess, TA_CREATE_PRESENTATION_CMD, &op, &err_origin);
-        if (result == TEEC_SUCCESS) {
-            printf("DVC_STRUCTURE:%s\n", dvc_structure_out);
-            printf("SIGNATURE:%s\n", signature_out);
-        } else {
-            printf("ERROR_TA:0x%x\n", result);
-        }
+    op.params[0].tmpref.buffer = argv[2];
+    op.params[0].tmpref.size = strlen(argv[2]);
+
+    // 2. Paramètre 1 : Bloc JWT non signé (Challenge envoyé par Python)
+    op.params[1].tmpref.buffer = argv[3];
+    op.params[1].tmpref.size = strlen(argv[3]);
+
+    // 3. Paramètres 2 et 3 : Tampons de sortie pour le Derived-VC et la Signature
+    char dvc_buf[8192] = {0};
+    char sig_buf[256] = {0};
+
+    op.params[2].tmpref.buffer = dvc_buf;
+    op.params[2].tmpref.size = sizeof(dvc_buf);
+
+    op.params[3].tmpref.buffer = sig_buf;
+    op.params[3].tmpref.size = sizeof(sig_buf);
+
+    // Invocation sécurisée
+    result = TEEC_InvokeCommand(&sess, TA_CREATE_PRESENTATION_CMD, &op, &err_origin);
+    
+    if (result == TEEC_SUCCESS) {
+        // Affichage des balises pour que client.py puisse les capturer via stdout
+        printf("DVC_STRUCTURE:%s\n", dvc_buf);
+        printf("SIGNATURE:%s\n", sig_buf);
+    } else {
+        printf("[-] Erreur TEEC_InvokeCommand: 0x%x (origin: 0x%x)\n", result, err_origin);
     }
+}
 
 cleanup:
     TEEC_CloseSession(&sess);
