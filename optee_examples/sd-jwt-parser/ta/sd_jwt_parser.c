@@ -9,6 +9,7 @@
 
 /* Prototypes */
 int ta_base64url_decode(const char *in, size_t in_len, char *out, size_t out_max);
+int ta_base64url_encode(const uint8_t *in, size_t in_len, char *out, size_t out_max);
 TEE_Result store_sd_jwt(const char *filename, const char *sd_jwt_raw, size_t sd_jwt_len);
 TEE_Result read_sd_jwt(const char *filename, char *out_buffer, size_t max_len, size_t *out_actual_len);
 TEE_Result TA_GenerateHolderKey(uint32_t param_types, TEE_Param params[4]);
@@ -55,10 +56,97 @@ int ta_base64url_decode(const char *in, size_t in_len, char *out, size_t out_max
     return (int)j;
 }
 
+int ta_base64url_encode(const uint8_t *in, size_t in_len, char *out, size_t out_max) {
+    static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    size_t i = 0, j = 0;
+
+    for (i = 0; i < in_len; i += 3) {
+        uint32_t val = (uint32_t)in[i] << 16;
+        size_t count = 1;
+
+        if (i + 1 < in_len) {
+            val |= (uint32_t)in[i + 1] << 8;
+            count = 2;
+        }
+        if (i + 2 < in_len) {
+            val |= (uint32_t)in[i + 2];
+            count = 3;
+        }
+
+        if (j < out_max - 1) out[j++] = b64_table[(val >> 18) & 0x3F];
+        if (j < out_max - 1) out[j++] = b64_table[(val >> 12) & 0x3F];
+
+        if (count >= 2) {
+            if (j < out_max - 1) out[j++] = b64_table[(val >> 6) & 0x3F];
+        }
+        if (count == 3) {
+            if (j < out_max - 1) out[j++] = b64_table[val & 0x3F];
+        }
+    }
+
+    if (j < out_max) out[j] = '\0';
+    return (int)j;
+}
+
+/*
+ * Convertit de façon universelle la signature OP-TEE (DER ou Raw R+S natif)
+ * vers le format brut R+S (64 octets).
+ */
+static int der_to_raw_signature_ta(const uint8_t *der, size_t der_len, uint8_t *raw_out) {
+    if (!der || der_len == 0) return -1;
+    
+    memset(raw_out, 0, 64);
+
+    // CAS 1 : Si OP-TEE a DÉJÀ généré la signature au format brut R+S (64 octets)
+    if (der_len == 64 && der[0] != 0x30) {
+        memcpy(raw_out, der, 64);
+        return 0;
+    }
+
+    // CAS 2 : Format ASN.1 DER (découpage dynamique)
+    if (der[0] != 0x30) return -1;
+    
+    size_t idx = 1;
+    if (der[idx] & 0x80) {
+        size_t len_bytes = der[idx] & 0x7F;
+        idx += 1 + len_bytes;
+    } else {
+        idx += 1;
+    }
+    
+    // Extrait R
+    if (idx >= der_len || der[idx] != 0x02) return -1;
+    idx++;
+    size_t r_len = der[idx++];
+    if (idx + r_len > der_len) return -1;
+    const uint8_t *r_bytes = &der[idx];
+    idx += r_len;
+    
+    // Extrait S
+    if (idx >= der_len || der[idx] != 0x02) return -1;
+    idx++;
+    size_t s_len = der[idx++];
+    if (idx + s_len > der_len) return -1;
+    const uint8_t *s_bytes = &der[idx];
+    
+    // Retirer le padding zéro ASN.1
+    if (r_len > 32 && r_bytes[0] == 0x00) { r_bytes++; r_len--; }
+    if (s_len > 32 && s_bytes[0] == 0x00) { s_bytes++; s_len--; }
+    
+    if (r_len > 32 || s_len > 32) return -1;
+    
+    memcpy(raw_out + (32 - r_len), r_bytes, r_len);
+    memcpy(raw_out + 32 + (32 - s_len), s_bytes, s_len);
+    
+    return 0;
+}
+
 /* =========================================================================
     ENRÔLEMENT : GENERATION DE LA CLÉ DU HOLDER
    ========================================================================= */
 TEE_Result TA_GenerateHolderKey(uint32_t param_types, TEE_Param params[4]) {
+    (void)param_types;
+
     TEE_Result res;
     TEE_ObjectHandle key_handle = TEE_HANDLE_NULL;
     TEE_ObjectHandle persistent_handle = TEE_HANDLE_NULL;
@@ -81,9 +169,6 @@ TEE_Result TA_GenerateHolderKey(uint32_t param_types, TEE_Param params[4]) {
     char x_hex[65] = {0}; char y_hex[65] = {0};
     format_bignum_to_hex(x_buf, x_size, x_hex);
     format_bignum_to_hex(y_buf, y_size, y_hex);
-    
-    IMSG("[TA_KEYGEN] Public X: %s", x_hex);
-    IMSG("[TA_KEYGEN] Public Y: %s", y_hex);
 
     const char *doc_name = (const char *)params[0].memref.buffer;
     char key_filename[64] = {0};
@@ -93,7 +178,6 @@ TEE_Result TA_GenerateHolderKey(uint32_t param_types, TEE_Param params[4]) {
     snprintf(out_buffer, params[1].memref.size, "%s|%s", x_hex, y_hex);
     params[1].memref.size = strlen(out_buffer);
 
-    // Stockage persistant de la clé privée
     TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE, key_filename, strlen(key_filename), TEE_DATA_FLAG_ACCESS_WRITE_META, &persistent_handle);
     if (persistent_handle != TEE_HANDLE_NULL) TEE_CloseAndDeletePersistentObject1(persistent_handle);
 
@@ -110,9 +194,11 @@ TEE_Result TA_GenerateHolderKey(uint32_t param_types, TEE_Param params[4]) {
 }
 
 /* =========================================================================
-    PRÉSENTATION SÉLECTIVE AVEC MEMOIRE SECURISEE
+    PRÉSENTATION COMPLÈTE SÉCURISÉE DANS LE SECURE WORLD
    ========================================================================= */
 TEE_Result TA_CreatePresentation(uint32_t param_types, TEE_Param params[4]) {
+    (void)param_types;
+
     TEE_Result res = TEE_SUCCESS;
     TEE_ObjectHandle persistent_handle = TEE_HANDLE_NULL;
     TEE_ObjectHandle key_handle = TEE_HANDLE_NULL;
@@ -120,25 +206,23 @@ TEE_Result TA_CreatePresentation(uint32_t param_types, TEE_Param params[4]) {
     TEE_OperationHandle hash_op = TEE_HANDLE_NULL;
 
     IMSG("=================================================");
-    IMSG("[TA_PRESENT] Invocation de la commande reçue !");
+    IMSG("[TA_PRESENT] Invocation de la génération de VP !");
     IMSG("=================================================");
 
-    // FIX : Augmentation de la taille mémoire à 8192 octets pour supporter les gros jetons COVID
     char *doc_name = TEE_Malloc(64, TEE_MALLOC_FILL_ZERO);
     char *target_keys = TEE_Malloc(256, TEE_MALLOC_FILL_ZERO);
     char *vc_raw = TEE_Malloc(8192, TEE_MALLOC_FILL_ZERO);
+    char *dvc_buf = TEE_Malloc(8192, TEE_MALLOC_FILL_ZERO);
     char *temp_b64 = TEE_Malloc(1024, TEE_MALLOC_FILL_ZERO);
     char *temp_clair = TEE_Malloc(1024, TEE_MALLOC_FILL_ZERO);
 
-    if (!doc_name || !target_keys || !vc_raw || !temp_b64 || !temp_clair) {
+    if (!doc_name || !target_keys || !vc_raw || !dvc_buf || !temp_b64 || !temp_clair) {
         IMSG("[TA_PRESENT] Erreur critique: Out of Memory Heap TEE");
         res = TEE_ERROR_OUT_OF_MEMORY; goto end;
     }
 
-    // Extraction Param 0 (Doc & Claims demandés)
+    // Param 0 : "doc_name|claims"
     const char *p0 = (const char *)params[0].memref.buffer;
-    IMSG("[TA_PRESENT] Param[0] Brut reçu de l'Hôte: %s", p0);
-    
     uint32_t s_idx = 0;
     while (s_idx < params[0].memref.size && p0[s_idx] != '|' && s_idx < 63) {
         doc_name[s_idx] = p0[s_idx]; s_idx++;
@@ -149,62 +233,62 @@ TEE_Result TA_CreatePresentation(uint32_t param_types, TEE_Param params[4]) {
         while (s_idx < params[0].memref.size && tk_idx < 255) target_keys[tk_idx++] = p0[s_idx++];
         target_keys[tk_idx] = '\0';
     }
-    IMSG("[TA_PRESENT] Document Cible identifié: %s", doc_name);
-    IMSG("[TA_PRESENT] Claims demandés filtrés: %s", target_keys);
 
-    // Extraction Param 1 (Payload non signé)
-    const char *p1 = (const char *)params[1].memref.buffer;
-    IMSG("[TA_PRESENT] Param[1] (Unsigned KB-JWT) reçu: %s", p1);
+    // Param 1 : Challenge ("nonce|aud|iat") - Découpage manuel
+    const char *challenge_raw = (const char *)params[1].memref.buffer;
+    char nonce[128] = {0}, aud[256] = {0}, iat_str[64] = {0};
 
-    // Lecture du SD-JWT scellé lors de l'enrôlement (max 8191 octets)
+    if (challenge_raw) {
+        const char *p1 = strchr(challenge_raw, '|');
+        if (p1) {
+            size_t nonce_len = (size_t)(p1 - challenge_raw);
+            if (nonce_len >= sizeof(nonce)) nonce_len = sizeof(nonce) - 1;
+            memcpy(nonce, challenge_raw, nonce_len);
+            nonce[nonce_len] = '\0';
+
+            const char *p2 = strchr(p1 + 1, '|');
+            if (p2) {
+                size_t aud_len = (size_t)(p2 - (p1 + 1));
+                if (aud_len >= sizeof(aud)) aud_len = sizeof(aud) - 1;
+                memcpy(aud, p1 + 1, aud_len);
+                aud[aud_len] = '\0';
+
+                snprintf(iat_str, sizeof(iat_str), "%s", p2 + 1);
+            }
+        }
+    }
+
+    // Lecture du SD-JWT scellé depuis le RPMB
     size_t vc_len = 0;
     res = read_sd_jwt(doc_name, vc_raw, 8191, &vc_len);
     if (res != TEE_SUCCESS) {
         EMSG("[TA_PRESENT] Impossible de lire le token dans le RPMB. Code: 0x%x", res);
         goto end;
     }
-    IMSG("[TA_PRESENT] Token brut récupéré du RPMB (%zu octets):", vc_len);
 
-    // Traitement du Derived VC
-    char *out_dvc = (char *)params[2].memref.buffer;
-    uint32_t out_max = params[2].memref.size;
-    uint32_t dvc_offset = 0;
-
+    // Extraction du JWS Issuer
     uint32_t i = 0;
     while (vc_raw[i] != '\0' && vc_raw[i] != '~') i++;
     uint32_t jws_len = i;
     
-    IMSG("[TA_PRESENT] Longueur détectée du JWS Issuer: %u", jws_len);
-    if (jws_len + 1 > out_max) { IMSG("[TA_PRESENT] Buffer param[2] trop court !"); res = TEE_ERROR_SHORT_BUFFER; goto end; }
-    
-    memcpy(out_dvc, vc_raw, jws_len);
-    dvc_offset = jws_len;
-    out_dvc[dvc_offset++] = '~';
+    memcpy(dvc_buf, vc_raw, jws_len);
+    uint32_t dvc_offset = jws_len;
+    dvc_buf[dvc_offset++] = '~';
 
-    // Algorithme de filtrage JSMN
+    // Filtrage des disclosures (JSMN)
     uint32_t start = jws_len + 1;
     uint32_t cursor = start;
-    uint32_t total_disclosures_parsed = 0;
-	uint32_t matched_count = 0;
-    IMSG("[TA_PRESENT] Démarrage du parsing JSMN sur les disclosures...");
-    IMSG("\n--- [DEBUG TA] DÉBUT DU FILTRAGE DES DISCLOSURES ---");
-	IMSG("[DEBUG TA] Liste des clés recherchées : '%s'", target_keys);
-
     while (cursor < vc_len && vc_raw[cursor] != '\0') {
         if (vc_raw[cursor] == '~') {
             uint32_t chunk_len = cursor - start;
             if (chunk_len > 5 && chunk_len < 1023) {
                 memcpy(temp_b64, &vc_raw[start], chunk_len);
                 temp_b64[chunk_len] = '\0';
-                total_disclosures_parsed++;
 
                 int dec_len = ta_base64url_decode(temp_b64, chunk_len, temp_clair, 1023);
                 if (dec_len > 0) {
                     temp_clair[dec_len] = '\0';
-                    IMSG("[TA_PARSER] Disclosure décodée au propre: %s", temp_clair);
-
-                    jsmn_parser parser; 
-                    jsmntok_t tokens[MAX_TOKENS]; 
+                    jsmn_parser parser; jsmntok_t tokens[MAX_TOKENS];
                     jsmn_init(&parser);
                     int p_res = jsmn_parse(&parser, temp_clair, dec_len, tokens, MAX_TOKENS);
 
@@ -214,22 +298,10 @@ TEE_Result TA_CreatePresentation(uint32_t param_types, TEE_Param params[4]) {
                         char key_name[64] = {0};
                         if (k_len < 63) {
                             memcpy(key_name, temp_clair + k_start, k_len);
-                            IMSG("[TA_PARSER] Clé JSON trouvée dans disclosure: %s", key_name);
-
                             if (strstr(target_keys, key_name)) {
-                            	matched_count++;
-                                IMSG("[TA_PRESENT] MATCH ! Rétention de la claim: %s", key_name);
-                                IMSG("[DEBUG TA] [#%02u] CLÉ: '%s' --> [ RETENUE (MATCH) ]", total_disclosures_parsed, key_name);
-                                if (dvc_offset + chunk_len + 1 < out_max) {
-                                    memcpy(&out_dvc[dvc_offset], &vc_raw[start], chunk_len);
-                                    dvc_offset += chunk_len;
-                                    out_dvc[dvc_offset++] = '~';
-                                }
-                                else{
-                                	IMSG("[DEBUG TA ERROR] Buffer out_dvc saturé ! Champ '%s' ignoré par manque de place.", key_name);
-                                }
-                            }else{
-                            	IMSG("[DEBUG TA] [#%02u] CLÉ: '%s' --> [ IGNORÉE (Filtre) ]", total_disclosures_parsed, key_name);
+                                memcpy(&dvc_buf[dvc_offset], &vc_raw[start], chunk_len);
+                                dvc_offset += chunk_len;
+                                dvc_buf[dvc_offset++] = '~';
                             }
                         }
                     }
@@ -239,69 +311,114 @@ TEE_Result TA_CreatePresentation(uint32_t param_types, TEE_Param params[4]) {
         }
         cursor++;
     }
-    IMSG("--- [DEBUG TA] FIN DU FILTRAGE ---");
-	IMSG("[DEBUG TA] Total disclosures analysées : %u | Total retenues : %u\n", total_disclosures_parsed, matched_count);
-	
-    out_dvc[dvc_offset] = '\0';
-    params[2].memref.size = dvc_offset;
-    IMSG("[TA_PRESENT] DVC_STRUCTURE finale générée pour l'Hôte: %s", out_dvc);
+    dvc_buf[dvc_offset] = '\0';
 
-    // Etape Cryptographique : Signature du challenge
+    // 1. Calcul du SHA-256 de la DVC_STRUCTURE
+    uint8_t dvc_digest[32] = {0}; uint32_t digest_len = 32;
+    res = TEE_AllocateOperation(&hash_op, TEE_ALG_SHA256, TEE_MODE_DIGEST, 0);
+    if (res == TEE_SUCCESS) {
+        TEE_DigestUpdate(hash_op, (uint8_t *)dvc_buf, strlen(dvc_buf));
+        res = TEE_DigestDoFinal(hash_op, NULL, 0, dvc_digest, &digest_len);
+        TEE_FreeOperation(hash_op);
+        hash_op = TEE_HANDLE_NULL;
+    }
+    if (res != TEE_SUCCESS) goto end;
+
+    // 2. Encodage Base64URL du sd_hash
+    char sd_hash_b64[128] = {0};
+    ta_base64url_encode(dvc_digest, digest_len, sd_hash_b64, sizeof(sd_hash_b64));
+
+    // 3. Construction du KB-Header et KB-Payload
+    const char *kb_header_json = "{\"alg\":\"ES256\",\"typ\":\"kb+jwt\"}";
+    char kb_header_b64[128] = {0};
+    ta_base64url_encode((const uint8_t *)kb_header_json, strlen(kb_header_json), kb_header_b64, sizeof(kb_header_b64));
+
+    char kb_payload_json[512] = {0};
+    snprintf(kb_payload_json, sizeof(kb_payload_json),
+             "{\"nonce\":\"%s\",\"aud\":\"%s\",\"iat\":%s,\"sd_hash\":\"%s\"}",
+             nonce, aud, iat_str, sd_hash_b64);
+
+    char kb_payload_b64[512] = {0};
+    ta_base64url_encode((const uint8_t *)kb_payload_json, strlen(kb_payload_json), kb_payload_b64, sizeof(kb_payload_b64));
+
+    char unsigned_kb_jwt[1024] = {0};
+    snprintf(unsigned_kb_jwt, sizeof(unsigned_kb_jwt), "%s.%s", kb_header_b64, kb_payload_b64);
+
+    // 4. Hachage SHA-256 du bloc KB
+    uint8_t kb_digest[32] = {0}; uint32_t kb_digest_len = 32;
+    res = TEE_AllocateOperation(&hash_op, TEE_ALG_SHA256, TEE_MODE_DIGEST, 0);
+    if (res == TEE_SUCCESS) {
+        TEE_DigestUpdate(hash_op, (uint8_t *)unsigned_kb_jwt, strlen(unsigned_kb_jwt));
+        res = TEE_DigestDoFinal(hash_op, NULL, 0, kb_digest, &kb_digest_len);
+        TEE_FreeOperation(hash_op);
+        hash_op = TEE_HANDLE_NULL;
+    }
+    if (res != TEE_SUCCESS) goto end;
+
+    // 5. Signature matérielle ECDSA P-256
     char key_filename[64] = {0};
     snprintf(key_filename, sizeof(key_filename), "%s_holder_key", doc_name);
-    
     res = TEE_OpenPersistentObject(TEE_STORAGE_PRIVATE, key_filename, strlen(key_filename), TEE_DATA_FLAG_ACCESS_READ, &persistent_handle);
-    if (res != TEE_SUCCESS) { EMSG("[TA_PRESENT] Erreur clé matérielle introuvable: 0x%x", res); goto end; }
+    if (res != TEE_SUCCESS) goto end;
 
     res = TEE_AllocateTransientObject(TEE_TYPE_ECDSA_KEYPAIR, 256, &key_handle);
     if (res == TEE_SUCCESS) res = TEE_CopyObjectAttributes1(key_handle, persistent_handle);
     TEE_CloseObject(persistent_handle);
-    if (res != TEE_SUCCESS) { IMSG("[TA_PRESENT] Échec copie attributs clé."); goto end; }
 
-    // Hachage SHA-256 du bloc unsigned envoyé par Python
-    uint8_t digest[32] = {0}; uint32_t digest_len = 32;
-    res = TEE_AllocateOperation(&hash_op, TEE_ALG_SHA256, TEE_MODE_DIGEST, 0);
-    if (res == TEE_SUCCESS) {
-        TEE_DigestUpdate(hash_op, (uint8_t *)p1, params[1].memref.size);
-        res = TEE_DigestDoFinal(hash_op, NULL, 0, digest, &digest_len);
-        TEE_FreeOperation(hash_op);
-        hash_op = TEE_HANDLE_NULL; // Évite tout double-free
-    }
-    if (res != TEE_SUCCESS) { IMSG("[TA_PRESENT] Erreur Hachage challenge"); goto end; }
-
-    // Signature Asymétrique
-    uint8_t sig_buf[80] = {0}; uint32_t sig_len = sizeof(sig_buf);
+    uint8_t sig_buf[128] = {0}; uint32_t sig_len = sizeof(sig_buf);
     res = TEE_AllocateOperation(&sign_op, TEE_ALG_ECDSA_P256, TEE_MODE_SIGN, 256);
     if (res == TEE_SUCCESS) res = TEE_SetOperationKey(sign_op, key_handle);
-    if (res == TEE_SUCCESS) res = TEE_AsymmetricSignDigest(sign_op, NULL, 0, digest, digest_len, sig_buf, &sig_len);
-    if (sign_op != TEE_HANDLE_NULL) {
-        TEE_FreeOperation(sign_op);
-        sign_op = TEE_HANDLE_NULL;
+    if (res == TEE_SUCCESS) res = TEE_AsymmetricSignDigest(sign_op, NULL, 0, kb_digest, kb_digest_len, sig_buf, &sig_len);
+    
+    if (sign_op != TEE_HANDLE_NULL) TEE_FreeOperation(sign_op);
+    if (key_handle != TEE_HANDLE_NULL) TEE_FreeTransientObject(key_handle);
+
+    if (res != TEE_SUCCESS) goto end;
+
+    // --- CONVERSION MATÉRIELLE UNIVERSELLE -> RAW R+S (64 octets) ET BASE64URL ---
+    uint8_t raw_sig[64] = {0};
+    if (der_to_raw_signature_ta(sig_buf, sig_len, raw_sig) != 0) {
+        res = TEE_ERROR_GENERIC;
+        goto end;
     }
 
-    if (res == TEE_SUCCESS) {
-        char *sig_hex_out = (char *)params[3].memref.buffer;
-        format_bignum_to_hex(sig_buf, sig_len, sig_hex_out);
-        params[3].memref.size = strlen(sig_hex_out);
-        IMSG("[TA_PRESENT] Signature matérielle calculée avec succès !");
-        IMSG("[TA_PRESENT] Hex brute transmise au REE: %s", sig_hex_out);
-    } else {
-        EMSG("[TA_PRESENT] Erreur lors de l'opération de signature: 0x%x", res);
+    char kb_sig_b64[128] = {0};
+    ta_base64url_encode(raw_sig, 64, kb_sig_b64, sizeof(kb_sig_b64));
+
+    // 6. Assemblage de la VP 100 % conforme Base64URL : DVC + KB_Header + KB_Payload + Sig_Base64URL
+    size_t required_vp_len = strlen(dvc_buf) + strlen(unsigned_kb_jwt) + 1 + strlen(kb_sig_b64) + 1;
+
+    if (params[2].memref.size < required_vp_len) {
+        params[2].memref.size = required_vp_len;
+        res = TEE_ERROR_SHORT_BUFFER;
+        goto end;
     }
 
-    if (key_handle != TEE_HANDLE_NULL) {
-        TEE_FreeTransientObject(key_handle);
+    char *out_vp = (char *)params[2].memref.buffer;
+    snprintf(out_vp, required_vp_len, "%s%s.%s", dvc_buf, unsigned_kb_jwt, kb_sig_b64);
+    params[2].memref.size = strlen(out_vp);
+
+    /* Affichage par blocs pour contourner la limite IMSG */
+    IMSG("\n=================================================");
+    IMSG("[TA_SUCCESS] VP complète scellée en Base64URL (%zu octets) :", strlen(out_vp));
+    size_t chunk_size = 200;
+    char chunk[201] = {0};
+    for (size_t offset = 0; offset < strlen(out_vp); offset += chunk_size) {
+        size_t len = (strlen(out_vp) - offset < chunk_size) ? (strlen(out_vp) - offset) : chunk_size;
+        memcpy(chunk, out_vp + offset, len);
+        chunk[len] = '\0';
+        IMSG("[VP_CHUNK] %s", chunk);
     }
+    IMSG("=================================================\n");
 
 end:
-    // Libération ultra-sécurisée sans crash
     if (doc_name) TEE_Free(doc_name);
     if (target_keys) TEE_Free(target_keys);
     if (vc_raw) TEE_Free(vc_raw);
+    if (dvc_buf) TEE_Free(dvc_buf);
     if (temp_b64) TEE_Free(temp_b64);
     if (temp_clair) TEE_Free(temp_clair);
 
-    IMSG("[TA_PRESENT] Fin d'exécution de la commande. Statut: 0x%x", res);
     return res;
 }
 
@@ -311,7 +428,6 @@ end:
 TEE_Result store_sd_jwt(const char *filename, const char *sd_jwt_raw, size_t sd_jwt_len) {
     TEE_ObjectHandle object = TEE_HANDLE_NULL; TEE_Result result;
     uint32_t obj_flags = TEE_DATA_FLAG_ACCESS_WRITE | TEE_DATA_FLAG_ACCESS_READ | TEE_DATA_FLAG_OVERWRITE;
-    IMSG("[TA_STORE] Sauvegarde RPMB demandée pour : %s", filename);
     result = TEE_CreatePersistentObject(TEE_STORAGE_PRIVATE, filename, strlen(filename), obj_flags, TEE_HANDLE_NULL, NULL, 0, &object);
     if (result != TEE_SUCCESS) return result;
     result = TEE_WriteObjectData(object, sd_jwt_raw, sd_jwt_len);
@@ -326,8 +442,6 @@ TEE_Result read_sd_jwt(const char *filename, char *out_buffer, size_t max_len, s
     result = TEE_GetObjectInfo1(object, &info);
     if (result != TEE_SUCCESS) { TEE_CloseObject(object); return result; }
     uint32_t count = 0;
-    
-    // Protection contre le buffer overflow
     uint32_t read_bytes = (info.dataSize > max_len) ? (uint32_t)max_len : info.dataSize;
     result = TEE_ReadObjectData(object, out_buffer, read_bytes, &count);
     if (result == TEE_SUCCESS) { out_buffer[count] = '\0'; *out_actual_len = (size_t)count; }
